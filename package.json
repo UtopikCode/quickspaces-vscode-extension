@@ -12,12 +12,23 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "quickspaces.helloWorld",
-        "title": "Hello World"
-      }
-    ]
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "quickspaces",
+          "title": "Quickspaces",
+          "icon": "resources/quickspaces.svg"
+        }
+      ]
+    },
+    "views": {
+      "quickspaces": [
+        {
+          "id": "quickspacesView",
+          "name": "Quickspaces View"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "yarn run package",
