@@ -1,0 +1,39 @@
+name: Security
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@83f0fe6c4988d98a455712a27f0255212bba9ec8  # v3.24.11
+        with:
+          languages: javascript
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1e60f620b9541d248cbecb12265c8c1e78351490  # v4.0.3
+        with:
+          node-version: '22'
+          cache: yarn
+          cache-dependency-path: '**/yarn.lock'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@83f0fe6c4988d98a455712a27f0255212bba9ec8  # v3.24.11
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@83f0fe6c4988d98a455712a27f0255212bba9ec8  # v3.24.11

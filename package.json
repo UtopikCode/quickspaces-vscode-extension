@@ -3,6 +3,7 @@
   "displayName": "Quickspaces",
   "description": "",
   "version": "0.0.1",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.110.0"
   },
@@ -42,7 +43,8 @@
     "pretest": "yarn run compile-tests && yarn run compile && yarn run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:headless": "bash scripts/test-headless.sh"
   },
   "devDependencies": {
     "@types/vscode": "^1.110.0",
