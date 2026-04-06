@@ -15,17 +15,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+        uses: actions/checkout@v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@83f0fe6c4988d98a455712a27f0255212bba9ec8  # v3.24.11
+        uses: github/codeql-action/init@v3
         with:
           languages: javascript
 
       - name: Setup Node.js
-        uses: actions/setup-node@1e60f620b9541d248cbecb12265c8c1e78351490  # v4.0.3
+        uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: 'lts/*'
           cache: yarn
           cache-dependency-path: '**/yarn.lock'
 
@@ -33,7 +33,7 @@ jobs:
         run: yarn install --frozen-lockfile
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@83f0fe6c4988d98a455712a27f0255212bba9ec8  # v3.24.11
+        uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@83f0fe6c4988d98a455712a27f0255212bba9ec8  # v3.24.11
+        uses: github/codeql-action/analyze@v3

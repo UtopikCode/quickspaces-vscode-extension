@@ -14,12 +14,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@1e60f620b9541d248cbecb12265c8c1e78351490  # v4.0.3
+        uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: 'lts/*'
           cache: yarn
           cache-dependency-path: '**/yarn.lock'
 
