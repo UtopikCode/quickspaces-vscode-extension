@@ -3,6 +3,7 @@
   "displayName": "Quickspaces",
   "description": "",
   "version": "0.0.1",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.110.0"
   },
@@ -12,12 +13,23 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "quickspaces.helloWorld",
-        "title": "Hello World"
-      }
-    ]
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "quickspaces",
+          "title": "Quickspaces",
+          "icon": "resources/quickspaces.svg"
+        }
+      ]
+    },
+    "views": {
+      "quickspaces": [
+        {
+          "id": "quickspacesView",
+          "name": "Quickspaces View"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "yarn run package",
@@ -31,7 +43,8 @@
     "pretest": "yarn run compile-tests && yarn run compile && yarn run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:headless": "bash scripts/test-headless.sh"
   },
   "devDependencies": {
     "@types/vscode": "^1.110.0",
