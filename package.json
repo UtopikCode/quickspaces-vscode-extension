@@ -26,7 +26,59 @@
       "quickspaces": [
         {
           "id": "quickspacesView",
-          "name": "Quickspaces View"
+          "name": ""
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "quickspacesView",
+        "contents": "No control plane configured.\n[Add Control Plane](command:quickspaces.addControlPlane)\n\nAdd a remote control plane URL to get started.",
+        "when": "!quickspaces.hasControlPlane"
+      }
+    ],
+    "commands": [
+      {
+        "command": "quickspaces.addControlPlane",
+        "title": "Add Control Plane",
+        "icon": "$(add)"
+      },
+      {
+        "command": "quickspaces.configureControlPlane",
+        "title": "Configure Control Plane",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "quickspaces.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "quickspaces.addControlPlane",
+          "when": "view == quickspacesView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "quickspaces.refresh",
+          "when": "view == quickspacesView",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/inline": [
+        {
+          "command": "quickspaces.configureControlPlane",
+          "when": "view == quickspacesView && viewItem == controlPlane",
+          "group": "inline"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "quickspaces.configureControlPlane",
+          "when": "view == quickspacesView && viewItem == controlPlane",
+          "group": "inline"
         }
       ]
     }
