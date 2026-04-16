@@ -68,6 +68,14 @@ interface AuthSession {
     expiresAt?: string;
 }
 
+function trimTrailingSlashes(value: string): string {
+    let end = value.length;
+    while (end > 0 && value[end - 1] === '/') {
+        end -= 1;
+    }
+    return value.slice(0, end);
+}
+
 type TreeItem = ControlPlaneItem | WorkspaceItem | StatusItem;
 
 class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
@@ -211,7 +219,7 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     }
 
     private async getAuthProviders(controlPlaneUrl: string): Promise<string[]> {
-        const endpoint = `${controlPlaneUrl.replace(/\/+$/, '')}/api/v1/auth/providers`;
+        const endpoint = `${trimTrailingSlashes(controlPlaneUrl)}/api/v1/auth/providers`;
         try {
             const response = await httpGetJson<unknown>(endpoint);
             if (!Array.isArray(response)) {
@@ -393,7 +401,7 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
             return [new StatusItem('Unable to verify authentication', 'Authentication did not complete successfully', 'error')];
         }
 
-        const url = `${cp.url.replace(/\/+$/, '')}/api/v1/workspaces`;
+        const url = `${trimTrailingSlashes(cp.url)}/api/v1/workspaces`;
         try {
             const workspaces = await httpGetJson<Workspace[]>(url, {
                 headers: { Authorization: `Bearer ${authSession.token}` },
@@ -424,7 +432,7 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
         const provider = cp.provider ?? 'github';
         const state = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const callbackUri = vscode.Uri.parse(`vscode://${this.context.extension.id}/callback`);
-        const loginUrl = `${cp.url.replace(/\/+$/, '')}/api/v1/auth/${provider}/login?redirect_uri=${encodeURIComponent(callbackUri.toString())}&state=${encodeURIComponent(state)}`;
+        const loginUrl = `${trimTrailingSlashes(cp.url)}/api/v1/auth/${provider}/login?redirect_uri=${encodeURIComponent(callbackUri.toString())}&state=${encodeURIComponent(state)}`;
 
         if (this.authCallbackRequest) {
             clearTimeout(this.authCallbackRequest.timeout);
@@ -455,7 +463,7 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     }
 
     private async exchangeAuthCode(cp: ControlPlane, provider: string, code: string): Promise<AuthSession> {
-        const endpoint = `${cp.url.replace(/\/+$/, '')}/api/v1/auth/${provider}/token`;
+        const endpoint = `${trimTrailingSlashes(cp.url)}/api/v1/auth/${provider}/token`;
         const response = await httpPostJson<{ access_token: string; expires_in: number }>(endpoint, new URLSearchParams({ code }).toString(), {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         });
