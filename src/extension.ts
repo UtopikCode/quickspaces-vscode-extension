@@ -58,6 +58,12 @@ interface Workspace {
     connection_url?: string;
 }
 
+interface AuthSession {
+    token: string;
+    provider: string;
+    expiresAt?: string;
+}
+
 type TreeItem = ControlPlaneItem | WorkspaceItem | StatusItem;
 
 class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
@@ -68,10 +74,23 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
 
     private controlPlanes: ControlPlane[] = [];
     private readonly workspaceStateKey = 'quickspaces.controlPlanes';
+    private readonly authSessionKey = 'quickspaces.authSession';
     private readonly workspaceCache = new Map<string, Workspace[]>();
+    private authCallbackRequest?: {
+        resolve: (result: boolean) => void;
+        reject: (error: any) => void;
+        state: string;
+        provider: string;
+        cp: ControlPlane;
+        timeout: ReturnType<typeof setTimeout>;
+    };
     private isInitialized = false;
 
     constructor(private context: vscode.ExtensionContext) {
+        context.subscriptions.push(vscode.window.registerUriHandler({
+            handleUri: uri => void this.handleUri(uri),
+        }));
+
         void this.loadControlPlanes();
     }
 
@@ -86,6 +105,54 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
         await this.context.workspaceState.update(this.workspaceStateKey, this.controlPlanes);
         this.updateContext();
         this.refresh();
+    }
+
+    private getAuthSession(): AuthSession | undefined {
+        const session = this.context.workspaceState.get<AuthSession>(this.authSessionKey);
+        if (!session) {
+            return undefined;
+        }
+
+        if (session.expiresAt && new Date(session.expiresAt) <= new Date()) {
+            return undefined;
+        }
+
+        return session;
+    }
+
+    private async saveAuthSession(session: AuthSession): Promise<void> {
+        await this.context.workspaceState.update(this.authSessionKey, session);
+    }
+
+    private async clearAuthSession(): Promise<void> {
+        await this.context.workspaceState.update(this.authSessionKey, undefined);
+    }
+
+    private async handleUri(uri: vscode.Uri): Promise<void> {
+        if (!this.authCallbackRequest) {
+            return;
+        }
+
+        const query = new URLSearchParams(uri.query);
+        const code = query.get('code');
+        const returnedState = query.get('state');
+        const provider = this.authCallbackRequest.provider;
+
+        if (!code || returnedState !== this.authCallbackRequest.state) {
+            this.authCallbackRequest.resolve(false);
+            return;
+        }
+
+        try {
+            const session = await this.exchangeAuthCode(this.authCallbackRequest.cp, provider, code);
+            await this.saveAuthSession(session);
+            this.authCallbackRequest.resolve(true);
+        } catch (error) {
+            this.authCallbackRequest.reject(error);
+        } finally {
+            clearTimeout(this.authCallbackRequest.timeout);
+            this.authCallbackRequest = undefined;
+        }
     }
 
     private controlPlaneDescription(): string {
@@ -295,21 +362,29 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
             return cached.map(workspace => new WorkspaceItem(workspace));
         }
 
-        const loggedIn = await this.ensureLoggedIn(cp);
-        if (!loggedIn) {
-            const loginProvider = cp.provider ?? 'github';
-            const loginUrl = `${cp.url.replace(/\/+$/, '')}/api/v1/auth/${loginProvider}/login`;
-            vscode.env.openExternal(vscode.Uri.parse(loginUrl));
-            return [new StatusItem(
-                'Sign-in required',
-                `Open browser to ${loginProvider} login and refresh when complete`,
-                'warning',
-            )];
+        let authSession = this.getAuthSession();
+        if (!authSession) {
+            const signedIn = await this.signIn(cp);
+            if (!signedIn) {
+                const loginProvider = cp.provider ?? 'github';
+                return [new StatusItem(
+                    'Sign-in required',
+                    `Open browser to ${loginProvider} login and wait for completion`,
+                    'warning',
+                )];
+            }
+            authSession = this.getAuthSession();
+        }
+
+        if (!authSession) {
+            return [new StatusItem('Unable to verify authentication', 'Authentication did not complete successfully', 'error')];
         }
 
         const url = `${cp.url.replace(/\/+$/, '')}/api/v1/workspaces`;
         try {
-            const workspaces = await httpGetJson<Workspace[]>(url);
+            const workspaces = await httpGetJson<Workspace[]>(url, {
+                headers: { Authorization: `Bearer ${authSession.token}` },
+            });
             const normalized = Array.isArray(workspaces) ? workspaces : [];
             this.workspaceCache.set(cp.name, normalized);
 
@@ -320,25 +395,63 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
             return normalized.map(workspace => new WorkspaceItem(workspace));
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unexpected error';
+            if (typeof message === 'string' && /HTTP\s+(401|403)/.test(message)) {
+                await this.clearAuthSession();
+                const loggedIn = await this.signIn(cp);
+                if (loggedIn) {
+                    return this.getWorkspaceChildren(cp);
+                }
+                return [new StatusItem('Sign-in required', 'Authentication expired or is invalid', 'warning')];
+            }
             return [new StatusItem('Unable to load workspaces', message, 'error')];
         }
     }
 
-    private async ensureLoggedIn(cp: ControlPlane): Promise<boolean> {
-        const url = `${cp.url.replace(/\/+$/, '')}/api/v1/status`;
-        return new Promise<boolean>(resolve => {
-            const client = url.startsWith('https://') ? https : http;
-            const req = client.get(url, { headers: { Accept: 'application/json' } }, res => {
-                if (res.statusCode === 401) {
-                    resolve(false);
-                } else {
-                    resolve(true);
-                }
-            });
+    private async signIn(cp: ControlPlane): Promise<boolean> {
+        const provider = cp.provider ?? 'github';
+        const state = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const callbackUri = vscode.Uri.parse(`vscode://${this.context.extension.id}/callback`);
+        const loginUrl = `${cp.url.replace(/\/+$/, '')}/api/v1/auth/${provider}/login?redirect_uri=${encodeURIComponent(callbackUri.toString())}&state=${encodeURIComponent(state)}`;
 
-            req.on('error', () => resolve(true));
-            req.end();
+        if (this.authCallbackRequest) {
+            clearTimeout(this.authCallbackRequest.timeout);
+            this.authCallbackRequest.reject(new Error('Auth flow restarted'));
+            this.authCallbackRequest = undefined;
+        }
+
+        const resultPromise = new Promise<boolean>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                if (this.authCallbackRequest) {
+                    this.authCallbackRequest = undefined;
+                }
+                resolve(false);
+            }, 120000);
+
+            this.authCallbackRequest = {
+                resolve,
+                reject,
+                state,
+                provider,
+                cp,
+                timeout,
+            };
         });
+
+        void vscode.env.openExternal(vscode.Uri.parse(loginUrl));
+        return resultPromise;
+    }
+
+    private async exchangeAuthCode(cp: ControlPlane, provider: string, code: string): Promise<AuthSession> {
+        const endpoint = `${cp.url.replace(/\/+$/, '')}/api/v1/auth/${provider}/token`;
+        const response = await httpPostJson<{ access_token: string; expires_in: number }>(endpoint, new URLSearchParams({ code }).toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        });
+
+        return {
+            token: response.access_token,
+            provider,
+            expiresAt: new Date(Date.now() + response.expires_in * 1000).toISOString(),
+        };
     }
 }
 
@@ -390,10 +503,15 @@ class StatusItem {
     }
 }
 
-function httpGetJson<T>(url: string): Promise<T> {
+function httpGetJson<T>(url: string, options?: { headers?: Record<string, string> }): Promise<T> {
     return new Promise((resolve, reject) => {
         const client = url.startsWith('https://') ? https : http;
-        const req = client.get(url, { headers: { Accept: 'application/json' } }, res => {
+        const headers: Record<string, string> = {
+            Accept: 'application/json',
+            ...options?.headers,
+        };
+
+        const req = client.get(url, { headers }, res => {
             let body = '';
 
             res.on('data', chunk => { body += chunk; });
@@ -411,6 +529,39 @@ function httpGetJson<T>(url: string): Promise<T> {
         });
 
         req.on('error', reject);
+        req.end();
+    });
+}
+
+function httpPostJson<T>(url: string, body: string, options?: { headers?: Record<string, string> }): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const client = url.startsWith('https://') ? https : http;
+        const headers: Record<string, string> = {
+            Accept: 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(body).toString(),
+            ...options?.headers,
+        };
+
+        const req = client.request(url, { method: 'POST', headers }, res => {
+            let responseBody = '';
+
+            res.on('data', chunk => { responseBody += chunk; });
+            res.on('end', () => {
+                if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                    try {
+                        resolve(JSON.parse(responseBody));
+                    } catch (err) {
+                        reject(new Error('Invalid JSON response'));
+                    }
+                } else {
+                    reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage || 'Error'}`));
+                }
+            });
+        });
+
+        req.on('error', reject);
+        req.write(body);
         req.end();
     });
 }

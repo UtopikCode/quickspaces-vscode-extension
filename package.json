@@ -1,16 +1,19 @@
 {
   "name": "quickspaces",
   "displayName": "Quickspaces",
+  "publisher": "UtopikCode",
   "description": "",
   "version": "0.0.1",
   "license": "MIT",
   "engines": {
     "vscode": "^1.110.0"
   },
+  "activationEvents": [
+    "onUri"
+  ],
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
