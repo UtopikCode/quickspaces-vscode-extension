@@ -30,7 +30,24 @@ class FakeWorkspaceState implements vscode.Memento {
     }
 }
 
-describe('QuickspacesTreeProvider Tests', () => {
+const originalRegisterUriHandler = vscode.window.registerUriHandler;
+
+function disableUriHandlerRegistration(): void {
+    (vscode.window as any).registerUriHandler = () => ({ dispose: () => undefined });
+}
+
+function restoreUriHandlerRegistration(): void {
+    (vscode.window as any).registerUriHandler = originalRegisterUriHandler;
+}
+
+suite('QuickspacesTreeProvider Tests', () => {
+    suiteSetup(() => {
+        disableUriHandlerRegistration();
+    });
+
+    suiteTeardown(() => {
+        restoreUriHandlerRegistration();
+    });
     const fakeContext = {
         workspaceState: new FakeWorkspaceState(),
         subscriptions: [] as vscode.Disposable[],
@@ -100,7 +117,7 @@ describe('QuickspacesTreeProvider Tests', () => {
     });
 });
 
-describe('HTTP helper tests', () => {
+suite('HTTP helper tests', () => {
     test('httpGetJson parses valid JSON', async () => {
         const server = http.createServer((req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
