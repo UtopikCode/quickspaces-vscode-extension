@@ -45,6 +45,7 @@ export function deactivate() { }
 interface ControlPlane {
     name: string;
     url: string;
+    provider?: string;
 }
 
 interface Workspace {
@@ -68,25 +69,34 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     private controlPlanes: ControlPlane[] = [];
     private readonly workspaceStateKey = 'quickspaces.controlPlanes';
     private readonly workspaceCache = new Map<string, Workspace[]>();
+    private isInitialized = false;
 
     constructor(private context: vscode.ExtensionContext) {
-        this.loadControlPlanes();
+        void this.loadControlPlanes();
     }
 
-    private loadControlPlanes(): void {
+    private async loadControlPlanes(): Promise<void> {
         this.controlPlanes = this.context.workspaceState.get(this.workspaceStateKey, []);
-        this.onControlPlaneChanged?.(this.controlPlaneDescription());
+        this.isInitialized = true;
+        this.updateContext();
+        this.refresh();
     }
 
     private async saveControlPlanes(): Promise<void> {
         await this.context.workspaceState.update(this.workspaceStateKey, this.controlPlanes);
-        this.onControlPlaneChanged?.(this.controlPlaneDescription());
+        this.updateContext();
         this.refresh();
     }
 
     private controlPlaneDescription(): string {
         const count = this.controlPlanes.length;
         return count ? `${count} control plane${count === 1 ? '' : 's'}` : '';
+    }
+
+    private updateContext(): void {
+        vscode.commands.executeCommand('setContext', 'quickspaces.hasControlPlane', this.controlPlanes.length > 0);
+        vscode.commands.executeCommand('setContext', 'quickspaces.isInitializing', !this.isInitialized);
+        this.onControlPlaneChanged?.(this.controlPlaneDescription());
     }
 
     async addControlPlane(): Promise<void> {
@@ -111,9 +121,51 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
             return;
         }
 
-        this.controlPlanes.push({ name, url });
+        const providers = await this.getAuthProviders(url);
+        let provider: string | undefined;
+        if (providers.length) {
+            const picked = await vscode.window.showQuickPick(
+                providers.map(value => ({ label: value })),
+                { placeHolder: 'Select an auth provider for this control plane (optional)' },
+            );
+            provider = picked?.label;
+        }
+
+        this.controlPlanes.push({ name, url, provider });
         await this.saveControlPlanes();
-        vscode.window.showInformationMessage(`Control plane "${name}" added`);
+        vscode.window.showInformationMessage(`Control plane "${name}" added${provider ? ` with provider ${provider}` : ''}`);
+    }
+
+    private async getAuthProviders(controlPlaneUrl: string): Promise<string[]> {
+        const endpoint = `${controlPlaneUrl.replace(/\/+$/, '')}/api/v1/auth/providers`;
+        try {
+            const response = await httpGetJson<unknown>(endpoint);
+            if (!Array.isArray(response)) {
+                return [];
+            }
+
+            return response
+                .map(provider => {
+                    if (typeof provider === 'string') {
+                        return provider;
+                    }
+                    if (provider && typeof provider === 'object') {
+                        if (typeof (provider as any).name === 'string') {
+                            return (provider as any).name;
+                        }
+                        if (typeof (provider as any).provider === 'string') {
+                            return (provider as any).provider;
+                        }
+                        if (typeof (provider as any).id === 'string') {
+                            return (provider as any).id;
+                        }
+                    }
+                    return undefined;
+                })
+                .filter((value): value is string => Boolean(value));
+        } catch {
+            return [];
+        }
     }
 
     async configureControlPlane(controlPlaneOrItem: ControlPlane | ControlPlaneItem | vscode.TreeItem | undefined): Promise<void> {
@@ -184,6 +236,12 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     }
 
     getChildren(element?: TreeItem): Thenable<TreeItem[]> {
+        if (!this.isInitialized) {
+            return Promise.resolve([
+                new StatusItem('Loading control planes...', 'Please wait while the extension initializes', 'sync~spin'),
+            ]);
+        }
+
         if (!this.controlPlanes.length) {
             return Promise.resolve([
                 new StatusItem('No control plane configured', 'Add one using the view actions', 'info'),
@@ -237,6 +295,18 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
             return cached.map(workspace => new WorkspaceItem(workspace));
         }
 
+        const loggedIn = await this.ensureLoggedIn(cp);
+        if (!loggedIn) {
+            const loginProvider = cp.provider ?? 'github';
+            const loginUrl = `${cp.url.replace(/\/+$/, '')}/api/v1/auth/${loginProvider}/login`;
+            vscode.env.openExternal(vscode.Uri.parse(loginUrl));
+            return [new StatusItem(
+                'Sign-in required',
+                `Open browser to ${loginProvider} login and refresh when complete`,
+                'warning',
+            )];
+        }
+
         const url = `${cp.url.replace(/\/+$/, '')}/api/v1/workspaces`;
         try {
             const workspaces = await httpGetJson<Workspace[]>(url);
@@ -253,6 +323,23 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
             return [new StatusItem('Unable to load workspaces', message, 'error')];
         }
     }
+
+    private async ensureLoggedIn(cp: ControlPlane): Promise<boolean> {
+        const url = `${cp.url.replace(/\/+$/, '')}/api/v1/status`;
+        return new Promise<boolean>(resolve => {
+            const client = url.startsWith('https://') ? https : http;
+            const req = client.get(url, { headers: { Accept: 'application/json' } }, res => {
+                if (res.statusCode === 401) {
+                    resolve(false);
+                } else {
+                    resolve(true);
+                }
+            });
+
+            req.on('error', () => resolve(true));
+            req.end();
+        });
+    }
 }
 
 class ControlPlaneItem {
@@ -260,8 +347,9 @@ class ControlPlaneItem {
 
     getTreeItem(): vscode.TreeItem {
         const item = new vscode.TreeItem(this.controlPlane.name, vscode.TreeItemCollapsibleState.Collapsed);
-        item.description = this.controlPlane.url;
-        item.tooltip = `${this.controlPlane.url}`;
+        const providerLabel = this.controlPlane.provider ? ` (${this.controlPlane.provider})` : '';
+        // item.description = `${this.controlPlane.url}${providerLabel}`;
+        item.tooltip = `${this.controlPlane.url}${providerLabel}`;
         item.iconPath = new vscode.ThemeIcon('server');
         item.contextValue = 'controlPlane';
         return item;
