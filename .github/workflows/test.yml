@@ -1,9 +1,13 @@
 name: Test
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,7 +30,7 @@ jobs:
           cache-dependency-path: '**/yarn.lock'
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y xvfb dbus
+        run: sudo apt-get update && sudo apt-get install -y xvfb dbus libnspr4 libnss3 libxss1 libasound2t64 libxrandr2 libxtst6 libatk1.0-0 libatk-bridge2.0-0 libgbm1
 
       - name: Install npm dependencies
         run: yarn install --frozen-lockfile

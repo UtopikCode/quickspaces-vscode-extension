@@ -1,16 +1,19 @@
 {
   "name": "quickspaces",
   "displayName": "Quickspaces",
+  "publisher": "UtopikCode",
   "description": "",
   "version": "0.0.1",
   "license": "MIT",
   "engines": {
     "vscode": "^1.110.0"
   },
+  "activationEvents": [
+    "onUri"
+  ],
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -26,7 +29,70 @@
       "quickspaces": [
         {
           "id": "quickspacesView",
-          "name": "Quickspaces View"
+          "name": ""
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "quickspacesView",
+        "contents": "No control plane configured.\n[Add Control Plane](command:quickspaces.addControlPlane)\n\nAdd a remote control plane URL to get started.",
+        "when": "!quickspaces.hasControlPlane && !quickspaces.isInitializing"
+      }
+    ],
+    "commands": [
+      {
+        "command": "quickspaces.addControlPlane",
+        "title": "Add Control Plane",
+        "icon": "$(add)"
+      },
+      {
+        "command": "quickspaces.configureControlPlane",
+        "title": "Configure Control Plane",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "quickspaces.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "quickspaces.addControlPlane",
+          "when": "view == quickspacesView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "quickspaces.refresh",
+          "when": "view == quickspacesView",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/inline": [
+        
+        {
+          "command": "quickspaces.refresh",
+          "when": "view == quickspacesView && viewItem == controlPlane",
+          "group": "inline@1"
+        },
+        {
+          "command": "quickspaces.configureControlPlane",
+          "when": "view == quickspacesView && viewItem == controlPlane",
+          "group": "inline@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "quickspaces.refresh",
+          "when": "view == quickspacesView && viewItem == controlPlane",
+          "group": "inline@1"
+        },
+        {
+          "command": "quickspaces.configureControlPlane",
+          "when": "view == quickspacesView && viewItem == controlPlane",
+          "group": "inline@2"
         }
       ]
     }
@@ -44,7 +110,7 @@
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vscode-test",
-    "test:headless": "bash scripts/test-headless.sh"
+    "test:headless": "xvfb-run -a yarn run test"
   },
   "devDependencies": {
     "@types/vscode": "^1.110.0",
