@@ -22,7 +22,11 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('quickspaces.addControlPlane', async () => {
-            await provider.addControlPlane();
+            const addedControlPlane = await provider.addControlPlane();
+            if (addedControlPlane) {
+                const treeItem = new ControlPlaneItem(addedControlPlane);
+                void treeView.reveal(treeItem, { expand: true });
+            }
         }),
     );
 
@@ -91,6 +95,7 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
             handleUri: uri => void this.handleUri(uri),
         }));
 
+        this.updateContext();
         void this.loadControlPlanes();
     }
 
@@ -166,13 +171,13 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
         this.onControlPlaneChanged?.(this.controlPlaneDescription());
     }
 
-    async addControlPlane(): Promise<void> {
+    async addControlPlane(): Promise<ControlPlane | undefined> {
         const name = await vscode.window.showInputBox({
             prompt: 'Control Plane Name',
             placeHolder: 'e.g., Production, Staging',
         });
         if (!name) {
-            return;
+            return undefined;
         }
 
         if (this.controlPlanes.find(cp => cp.name === name)) {
@@ -198,9 +203,11 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
             provider = picked?.label;
         }
 
-        this.controlPlanes.push({ name, url, provider });
+        const newControlPlane: ControlPlane = { name, url, provider };
+        this.controlPlanes.push(newControlPlane);
         await this.saveControlPlanes();
         vscode.window.showInformationMessage(`Control plane "${name}" added${provider ? ` with provider ${provider}` : ''}`);
+        return newControlPlane;
     }
 
     private async getAuthProviders(controlPlaneUrl: string): Promise<string[]> {
@@ -302,6 +309,14 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
         return element.getTreeItem();
     }
 
+    getParent(element: TreeItem): TreeItem | null {
+        if (element instanceof WorkspaceItem) {
+            const parent = this.controlPlanes.find(cp => cp.name === element.controlPlaneName);
+            return parent ? new ControlPlaneItem(parent) : null;
+        }
+        return null;
+    }
+
     getChildren(element?: TreeItem): Thenable<TreeItem[]> {
         if (!this.isInitialized) {
             return Promise.resolve([
@@ -310,9 +325,7 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
         }
 
         if (!this.controlPlanes.length) {
-            return Promise.resolve([
-                new StatusItem('No control plane configured', 'Add one using the view actions', 'info'),
-            ]);
+            return Promise.resolve([]);
         }
 
         if (!element) {
@@ -359,7 +372,7 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     private async getWorkspaceChildren(cp: ControlPlane): Promise<TreeItem[]> {
         const cached = this.workspaceCache.get(cp.name);
         if (cached) {
-            return cached.map(workspace => new WorkspaceItem(workspace));
+            return cached.map(workspace => new WorkspaceItem(workspace, cp.name));
         }
 
         let authSession = this.getAuthSession();
@@ -392,7 +405,7 @@ class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
                 return [new StatusItem('No workspaces found', 'The control plane returned an empty list', 'info')];
             }
 
-            return normalized.map(workspace => new WorkspaceItem(workspace));
+            return normalized.map(workspace => new WorkspaceItem(workspace, cp.name));
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unexpected error';
             if (typeof message === 'string' && /HTTP\s+(401|403)/.test(message)) {
@@ -470,7 +483,7 @@ class ControlPlaneItem {
 }
 
 class WorkspaceItem {
-    constructor(public readonly workspace: Workspace) { }
+    constructor(public readonly workspace: Workspace, public readonly controlPlaneName: string) { }
 
     getTreeItem(): vscode.TreeItem {
         const label = this.workspace.repo_owner && this.workspace.repo_name
