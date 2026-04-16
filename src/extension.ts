@@ -578,3 +578,6 @@ function httpPostJson<T>(url: string, body: string, options?: { headers?: Record
         req.end();
     });
 }
+
+export type { ControlPlane, Workspace, AuthSession };
+export { QuickspacesTreeProvider, ControlPlaneItem, WorkspaceItem, StatusItem, httpGetJson, httpPostJson };
