@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import {
     QuickspacesTreeProvider,
     ControlPlaneItem,
+    WorkspaceItem,
     StatusItem,
     httpGetJson,
     httpPostJson,
@@ -89,31 +90,35 @@ suite('QuickspacesTreeProvider Tests', () => {
         assert.strictEqual(provider['controlPlaneDescription'](), '2 control planes');
     });
 
-    test('getAuthProviders normalizes provider responses', async () => {
-        const server = http.createServer((req, res) => {
-            if (req.url === '/api/v1/auth/providers') {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify([
-                    'github',
-                    { name: 'gitlab' },
-                    { provider: 'azure' },
-                    { id: 'custom' },
-                    { invalid: true },
-                ]));
-                return;
-            }
-            res.writeHead(404);
-            res.end();
-        });
+    test('getAvailableProviders returns the built-in provider list', async () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const providers = await provider['getAvailableProviders']();
+        assert.deepStrictEqual(providers, [
+            { id: 'github', label: 'GitHub', apiUrl: 'https://api.github.com' },
+            { id: 'gitlab', label: 'GitLab', apiUrl: 'https://gitlab.com/api/v4' },
+            { id: 'azure', label: 'Azure DevOps', apiUrl: 'https://dev.azure.com' },
+        ]);
+    });
 
-        await new Promise<void>(resolve => server.listen(0, resolve));
-        const port = (server.address() as any).port;
+    test('getAccessToken requests provider-specific scopes', async () => {
+        const originalGetSession = (vscode.authentication as any).getSession;
+        let receivedProviderId: string | undefined;
+        let receivedScopes: readonly string[] | undefined;
+
+        (vscode.authentication as any).getSession = async (providerId: string, scopes: readonly string[], options: { createIfNone: boolean }) => {
+            receivedProviderId = providerId;
+            receivedScopes = scopes;
+            return { accessToken: 'test-token' } as any;
+        };
 
         const provider = new QuickspacesTreeProvider(fakeContext);
-        const names = await provider['getAuthProviders'](`http://127.0.0.1:${port}`);
-        assert.deepStrictEqual(names, ['github', 'gitlab', 'azure', 'custom']);
+        const token = await provider['getAccessToken']({ name: 'Test', url: 'https://example.com', provider: 'github' }, true);
 
-        server.close();
+        assert.strictEqual(token, 'test-token');
+        assert.strictEqual(receivedProviderId, 'github');
+        assert.deepStrictEqual(receivedScopes, ['repo']);
+
+        (vscode.authentication as any).getSession = originalGetSession;
     });
 });
 

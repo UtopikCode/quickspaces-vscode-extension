@@ -47,6 +47,11 @@
         "icon": "$(add)"
       },
       {
+        "command": "quickspaces.addWorkspace",
+        "title": "Login and list repositories",
+        "icon": "$(add)"
+      },
+      {
         "command": "quickspaces.configureControlPlane",
         "title": "Configure Control Plane",
         "icon": "$(settings-gear)"
@@ -71,7 +76,11 @@
         }
       ],
       "view/item/inline": [
-        
+        {
+          "command": "quickspaces.addWorkspace",
+          "when": "view == quickspacesView && viewItem == controlPlane",
+          "group": "inline@3"
+        },
         {
           "command": "quickspaces.refresh",
           "when": "view == quickspacesView && viewItem == controlPlane",
@@ -85,14 +94,19 @@
       ],
       "view/item/context": [
         {
-          "command": "quickspaces.refresh",
+          "command": "quickspaces.addWorkspace",
           "when": "view == quickspacesView && viewItem == controlPlane",
           "group": "inline@1"
         },
         {
-          "command": "quickspaces.configureControlPlane",
+          "command": "quickspaces.refresh",
           "when": "view == quickspacesView && viewItem == controlPlane",
           "group": "inline@2"
+        },
+        {
+          "command": "quickspaces.configureControlPlane",
+          "when": "view == quickspacesView && viewItem == controlPlane",
+          "group": "inline@3"
         }
       ]
     }
