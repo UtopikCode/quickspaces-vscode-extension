@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { QuickspacesTreeProvider, ControlPlaneItem, WorkspaceItem, StatusItem } from './lib/treeProvider';
-import type { ControlPlane } from './lib/types';
+import type { ControlPlane, WorkspaceInfo } from './lib/types';
 
 export function activate(context: vscode.ExtensionContext) {
     const provider = new QuickspacesTreeProvider(context);
@@ -16,7 +16,6 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     context.subscriptions.push(treeView);
-    context.subscriptions.push(vscode.window.registerUriHandler(provider));
 
     context.subscriptions.push(
         vscode.commands.registerCommand('quickspaces.addControlPlane', async () => {
@@ -50,5 +49,5 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() { }
 
-export type { ControlPlane, Workspace } from './lib/types';
+export type { ControlPlane, WorkspaceInfo } from './lib/types';
 export { QuickspacesTreeProvider, ControlPlaneItem, WorkspaceItem, StatusItem, httpGetJson, httpPostJson } from './lib/treeProvider';

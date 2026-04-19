@@ -58,21 +58,21 @@ suite('QuickspacesTreeProvider Tests', () => {
     test('normalizeControlPlane handles ControlPlane and tree items', () => {
         const provider = new QuickspacesTreeProvider(fakeContext);
 
-        const cp: ControlPlane = { name: 'Test', url: 'https://example.com', provider: 'github' };
-        assert.deepStrictEqual(provider['normalizeControlPlane'](cp), cp);
+        const cp: ControlPlane = { name: 'Test', url: 'https://example.com' };
+        assert.deepStrictEqual(provider['resolveControlPlane'](cp), cp);
 
         const cpItem = new ControlPlaneItem(cp);
-        assert.deepStrictEqual(provider['normalizeControlPlane'](cpItem), cp);
+        assert.deepStrictEqual(provider['resolveControlPlane'](cpItem), cp);
 
         const treeItem = new vscode.TreeItem('Tree Label');
         treeItem.description = 'https://example.com';
-        assert.deepStrictEqual(provider['normalizeControlPlane'](treeItem), {
+        assert.deepStrictEqual(provider['resolveControlPlane'](treeItem), {
             name: 'Tree Label',
             url: 'https://example.com',
         });
 
         const invalidItem = new vscode.TreeItem('No Description');
-        assert.strictEqual(provider['normalizeControlPlane'](invalidItem), undefined);
+        assert.strictEqual(provider['resolveControlPlane'](invalidItem), undefined);
     });
 
     test('controlPlaneDescription returns correct labels', () => {
@@ -90,24 +90,14 @@ suite('QuickspacesTreeProvider Tests', () => {
         assert.strictEqual(provider['controlPlaneDescription'](), '2 control planes');
     });
 
-    test('getAvailableProviders returns the built-in provider list', async () => {
-        const provider = new QuickspacesTreeProvider(fakeContext);
-        const providers = await provider['getAvailableProviders']();
-        assert.deepStrictEqual(providers, [
-            { id: 'github', label: 'GitHub', apiUrl: 'https://api.github.com' },
-            { id: 'gitlab', label: 'GitLab', apiUrl: 'https://gitlab.com/api/v4' },
-            { id: 'azure', label: 'Azure DevOps', apiUrl: 'https://dev.azure.com' },
-        ]);
-    });
-
     test('ControlPlaneItem defaults to expanded state', () => {
-        const cp: ControlPlane = { name: 'Test', url: 'https://example.com', provider: 'github' };
+        const cp: ControlPlane = { name: 'Test', url: 'https://example.com' };
         const cpItem = new ControlPlaneItem(cp);
         const treeItem = cpItem.getTreeItem();
         assert.strictEqual(treeItem.collapsibleState, vscode.TreeItemCollapsibleState.Expanded);
     });
 
-    test('getAccessToken requests provider-specific scopes', async () => {
+    test('getAccessToken requests GitHub scopes', async () => {
         const originalGetSession = (vscode.authentication as any).getSession;
         let receivedProviderId: string | undefined;
         let receivedScopes: readonly string[] | undefined;
@@ -119,9 +109,30 @@ suite('QuickspacesTreeProvider Tests', () => {
         };
 
         const provider = new QuickspacesTreeProvider(fakeContext);
-        const token = await provider['getAccessToken']({ name: 'Test', url: 'https://example.com', provider: 'github' }, true);
+        const token = await provider['getAccessToken']({ name: 'Test', url: 'https://example.com' }, true);
 
         assert.strictEqual(token, 'test-token');
+        assert.strictEqual(receivedProviderId, 'github');
+        assert.deepStrictEqual(receivedScopes, ['repo']);
+
+        (vscode.authentication as any).getSession = originalGetSession;
+    });
+
+    test('getAccessToken defaults to GitHub and uses default scopes when provider is missing', async () => {
+        const originalGetSession = (vscode.authentication as any).getSession;
+        let receivedProviderId: string | undefined;
+        let receivedScopes: readonly string[] | undefined;
+
+        (vscode.authentication as any).getSession = async (providerId: string, scopes: readonly string[], options: { createIfNone: boolean }) => {
+            receivedProviderId = providerId;
+            receivedScopes = scopes;
+            return { accessToken: 'fallback-token' } as any;
+        };
+
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const token = await provider['getAccessToken']({ name: 'Test', url: 'https://example.com' }, true);
+
+        assert.strictEqual(token, 'fallback-token');
         assert.strictEqual(receivedProviderId, 'github');
         assert.deepStrictEqual(receivedScopes, ['repo']);
 

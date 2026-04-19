@@ -9,7 +9,12 @@
     "vscode": "^1.110.0"
   },
   "activationEvents": [
-    "onUri"
+    "onUri",
+    "onView:quickspacesView",
+    "onCommand:quickspaces.addControlPlane",
+    "onCommand:quickspaces.addWorkspace",
+    "onCommand:quickspaces.configureControlPlane",
+    "onCommand:quickspaces.refresh"
   ],
   "categories": [
     "Other"

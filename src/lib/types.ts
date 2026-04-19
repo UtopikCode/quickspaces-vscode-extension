@@ -9,9 +9,15 @@ export interface ProviderInfo {
     id: string;
     label: string;
     apiUrl?: string;
+    repositoryUrlTemplate?: string;
+    authorizationUrl?: string;
+    tokenUrl?: string;
+    scope?: string;
+    repoListUrl?: string;
+    repoListPath?: string;
 }
 
-export interface Workspace {
+export interface WorkspaceInfo {
     workspace_id?: string;
     repo_owner?: string;
     repo_name?: string;
@@ -21,7 +27,7 @@ export interface Workspace {
     connection_url?: string;
 }
 
-export interface WorkspaceCreateRequest {
+export interface CreateWorkspaceRequest {
     repoOwner: string;
     repoName: string;
     repoProvider: string;
