@@ -6,6 +6,7 @@ export function httpGetJson<T>(url: string, options?: { headers?: Record<string,
         const client = url.startsWith('https://') ? https : http;
         const headers: Record<string, string> = {
             Accept: 'application/json',
+            'User-Agent': 'Quickspaces VS Code Extension',
             ...options?.headers,
         };
 
@@ -36,6 +37,7 @@ export function httpPostJson<T>(url: string, body: string, options?: { headers?:
         const client = url.startsWith('https://') ? https : http;
         const headers: Record<string, string> = {
             Accept: 'application/json',
+            'User-Agent': 'Quickspaces VS Code Extension',
             'Content-Type': 'application/x-www-form-urlencoded',
             'Content-Length': Buffer.byteLength(body).toString(),
             ...options?.headers,

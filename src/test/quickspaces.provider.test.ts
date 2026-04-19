@@ -136,6 +136,19 @@ suite('HTTP helper tests', () => {
         server.close();
     });
 
+    test('httpGetJson sends a default User-Agent header', async () => {
+        const server = http.createServer((req, res) => {
+            assert.strictEqual(req.headers['user-agent'], 'Quickspaces VS Code Extension');
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+        });
+
+        await new Promise<void>(resolve => server.listen(0, resolve));
+        const port = (server.address() as any).port;
+        await httpGetJson<{ ok: boolean }>(`http://127.0.0.1:${port}/`);
+        server.close();
+    });
+
     test('httpGetJson rejects on non-200 responses', async () => {
         const server = http.createServer((req, res) => {
             res.writeHead(404, { 'Content-Type': 'application/json' });

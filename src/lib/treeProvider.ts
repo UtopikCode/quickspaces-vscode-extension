@@ -279,25 +279,54 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const repoPick = await vscode.window.showQuickPick(
-            repos.map(repo => ({
-                label: repo.repo_owner && repo.repo_name ? `${repo.repo_owner}/${repo.repo_name}` : repo.workspace_id ?? repo.ref ?? 'Repository',
-                description: repo.actual_state || repo.desired_state || '',
-                detail: repo.connection_url || repo.ref || '',
-                workspace: repo,
-            } as vscode.QuickPickItem & { workspace: Workspace })),
-            {
-                placeHolder: 'Search or select a repository',
-                matchOnDescription: true,
-                matchOnDetail: true,
-            },
-        );
+        const providerId = controlPlane.provider?.toLowerCase() ?? 'github';
+        const currentUsername = providerId === 'github'
+            ? await this.getGitHubUsername(controlPlane, token)
+            : undefined;
 
-        if (!repoPick) {
+        const quickPickItems = repos.map(repo => ({
+            label: repo.repo_owner && repo.repo_name ? `${repo.repo_owner}/${repo.repo_name}` : repo.workspace_id ?? repo.ref ?? 'Repository',
+            description: repo.actual_state || repo.desired_state || '',
+            detail: repo.connection_url || repo.ref || '',
+            workspace: repo,
+        } as vscode.QuickPickItem & { workspace: Workspace }));
+
+        const ownedItems = currentUsername
+            ? quickPickItems.filter(item => item.workspace.repo_owner === currentUsername)
+            : quickPickItems;
+
+        const quickPick = vscode.window.createQuickPick<vscode.QuickPickItem & { workspace: Workspace }>();
+        quickPick.placeholder = 'Search or select a repository';
+        quickPick.matchOnDescription = true;
+        quickPick.matchOnDetail = true;
+        quickPick.items = ownedItems.length ? ownedItems : quickPickItems;
+
+        quickPick.onDidChangeValue(value => {
+            if (!value) {
+                quickPick.items = ownedItems.length ? ownedItems : quickPickItems;
+                return;
+            }
+
+            const filter = value.toLowerCase();
+            quickPick.items = quickPickItems.filter(item =>
+                item.label.toLowerCase().includes(filter)
+                || item.description?.toLowerCase().includes(filter)
+                || item.detail?.toLowerCase().includes(filter),
+            );
+        });
+
+        const selectedRepo = await new Promise<vscode.QuickPickItem & { workspace: Workspace } | undefined>(resolve => {
+            quickPick.onDidAccept(() => resolve(quickPick.selectedItems[0]));
+            quickPick.onDidHide(() => resolve(undefined));
+            quickPick.show();
+        });
+        quickPick.dispose();
+
+        if (!selectedRepo) {
             return;
         }
 
-        const selectedWorkspace = (repoPick as any).workspace as Workspace;
+        const selectedWorkspace = selectedRepo.workspace;
         const uri = selectedWorkspace.connection_url || selectedWorkspace.ref;
         if (!uri) {
             vscode.window.showInformationMessage('Selected repository does not expose a URL.');
@@ -336,6 +365,23 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
     }
 
+    private async getGitHubUsername(cp: ControlPlane, token: string): Promise<string | undefined> {
+        const baseUrl = cp.providerApiUrl || this.getProviderBaseUrl('github');
+        if (!baseUrl) {
+            return undefined;
+        }
+
+        try {
+            const normalizedBaseUrl = trimTrailingSlashes(baseUrl);
+            const user = await httpGetJson<{ login: string }>(`${normalizedBaseUrl}/user`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            return typeof user.login === 'string' ? user.login : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
     private getProviderRepoUrl(cp: ControlPlane): string {
         const providerId = cp.provider?.toLowerCase();
         const baseUrl = cp.providerApiUrl || this.getProviderBaseUrl(providerId);
@@ -351,7 +397,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
         switch (providerId) {
             case 'github':
-                return `${normalized}/user/repos`;
+                return `${normalized}/user/repos?per_page=100`;
             case 'gitlab':
                 return `${normalized}/projects?membership=true&simple=true`;
             case 'azure':
