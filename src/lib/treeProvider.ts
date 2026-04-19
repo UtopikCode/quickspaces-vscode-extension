@@ -42,8 +42,9 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
     }
 
     private async getAccessToken(cp: ControlPlane, createIfNone: boolean): Promise<string | undefined> {
-        const provider = this.getProviderInfo(cp.provider ?? '', cp);
-        const authProviderId = provider?.id ?? cp.provider ?? 'github';
+        const providerId = cp.provider ?? 'github';
+        const provider = this.getProviderInfo(providerId, cp);
+        const authProviderId = provider?.id ?? providerId;
         const scopes = this.getProviderScopes(provider);
 
         try {
