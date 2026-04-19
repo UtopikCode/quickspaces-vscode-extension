@@ -4,9 +4,11 @@ import * as vscode from 'vscode';
 import {
     QuickspacesTreeProvider,
     ControlPlaneItem,
+    WorkspaceItem,
     StatusItem,
     httpGetJson,
     httpPostJson,
+    httpRequestJson,
     ControlPlane,
 } from '../extension';
 
@@ -30,26 +32,10 @@ class FakeWorkspaceState implements vscode.Memento {
     }
 }
 
-const originalRegisterUriHandler = vscode.window.registerUriHandler;
-
-function disableUriHandlerRegistration(): void {
-    (vscode.window as any).registerUriHandler = () => ({ dispose: () => undefined });
-}
-
-function restoreUriHandlerRegistration(): void {
-    (vscode.window as any).registerUriHandler = originalRegisterUriHandler;
-}
-
 suite('QuickspacesTreeProvider Tests', () => {
-    suiteSetup(() => {
-        disableUriHandlerRegistration();
-    });
-
-    suiteTeardown(() => {
-        restoreUriHandlerRegistration();
-    });
     const fakeContext = {
         workspaceState: new FakeWorkspaceState(),
+        globalState: new FakeWorkspaceState(),
         subscriptions: [] as vscode.Disposable[],
         extension: { id: 'test.extension' },
     } as unknown as vscode.ExtensionContext;
@@ -57,21 +43,21 @@ suite('QuickspacesTreeProvider Tests', () => {
     test('normalizeControlPlane handles ControlPlane and tree items', () => {
         const provider = new QuickspacesTreeProvider(fakeContext);
 
-        const cp: ControlPlane = { name: 'Test', url: 'https://example.com', provider: 'github' };
-        assert.deepStrictEqual(provider['normalizeControlPlane'](cp), cp);
+        const cp: ControlPlane = { name: 'Test', url: 'https://example.com' };
+        assert.deepStrictEqual(provider['resolveControlPlane'](cp), cp);
 
         const cpItem = new ControlPlaneItem(cp);
-        assert.deepStrictEqual(provider['normalizeControlPlane'](cpItem), cp);
+        assert.deepStrictEqual(provider['resolveControlPlane'](cpItem), cp);
 
         const treeItem = new vscode.TreeItem('Tree Label');
         treeItem.description = 'https://example.com';
-        assert.deepStrictEqual(provider['normalizeControlPlane'](treeItem), {
+        assert.deepStrictEqual(provider['resolveControlPlane'](treeItem), {
             name: 'Tree Label',
             url: 'https://example.com',
         });
 
         const invalidItem = new vscode.TreeItem('No Description');
-        assert.strictEqual(provider['normalizeControlPlane'](invalidItem), undefined);
+        assert.strictEqual(provider['resolveControlPlane'](invalidItem), undefined);
     });
 
     test('controlPlaneDescription returns correct labels', () => {
@@ -89,31 +75,60 @@ suite('QuickspacesTreeProvider Tests', () => {
         assert.strictEqual(provider['controlPlaneDescription'](), '2 control planes');
     });
 
-    test('getAuthProviders normalizes provider responses', async () => {
-        const server = http.createServer((req, res) => {
-            if (req.url === '/api/v1/auth/providers') {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify([
-                    'github',
-                    { name: 'gitlab' },
-                    { provider: 'azure' },
-                    { id: 'custom' },
-                    { invalid: true },
-                ]));
-                return;
-            }
-            res.writeHead(404);
-            res.end();
-        });
+    test('resolveWorkspace returns workspace and control plane container', () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const workspace = { workspace_id: 'ws-123', repo_owner: 'octo', repo_name: 'hello' };
+        provider['controlPlanes'] = [{ name: 'Main', url: 'https://example.com' }];
 
-        await new Promise<void>(resolve => server.listen(0, resolve));
-        const port = (server.address() as any).port;
+        const workspaceItem = new WorkspaceItem(workspace, 'Main');
+        const resolved = provider['resolveWorkspace'](workspaceItem);
+
+        assert.ok(resolved);
+        assert.deepStrictEqual(resolved?.workspace, workspace);
+        assert.deepStrictEqual(resolved?.controlPlane, provider['controlPlanes'][0]);
+    });
+
+    test('ControlPlaneItem defaults to expanded state', () => {
+        const cp: ControlPlane = { name: 'Test', url: 'https://example.com' };
+        const cpItem = new ControlPlaneItem(cp);
+        const treeItem = cpItem.getTreeItem();
+        assert.strictEqual(treeItem.collapsibleState, vscode.TreeItemCollapsibleState.Expanded);
+    });
+
+    test('getAccessToken requests GitHub scopes and returns the access token', async () => {
+        const originalGetSession = (vscode.authentication as any).getSession;
+        let receivedProviderId: string | undefined;
+        let receivedScopes: readonly string[] | undefined;
+        let receivedCreateIfNone: boolean | undefined;
+
+        (vscode.authentication as any).getSession = async (providerId: string, scopes: readonly string[], options: { createIfNone: boolean }) => {
+            receivedProviderId = providerId;
+            receivedScopes = scopes;
+            receivedCreateIfNone = options.createIfNone;
+            return { accessToken: 'test-token' } as any;
+        };
 
         const provider = new QuickspacesTreeProvider(fakeContext);
-        const names = await provider['getAuthProviders'](`http://127.0.0.1:${port}`);
-        assert.deepStrictEqual(names, ['github', 'gitlab', 'azure', 'custom']);
+        const token = await provider['getAccessToken']({ name: 'Test', url: 'https://example.com' }, true);
 
-        server.close();
+        assert.strictEqual(token, 'test-token');
+        assert.strictEqual(receivedProviderId, 'github');
+        assert.deepStrictEqual(receivedScopes, ['repo']);
+        assert.strictEqual(receivedCreateIfNone, true);
+
+        (vscode.authentication as any).getSession = originalGetSession;
+    });
+
+    test('getAccessToken returns undefined when no session exists and createIfNone is false', async () => {
+        const originalGetSession = (vscode.authentication as any).getSession;
+        (vscode.authentication as any).getSession = async () => undefined;
+
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const token = await provider['getAccessToken']({ name: 'Test', url: 'https://example.com' }, false);
+
+        assert.strictEqual(token, undefined);
+
+        (vscode.authentication as any).getSession = originalGetSession;
     });
 });
 
@@ -128,6 +143,19 @@ suite('HTTP helper tests', () => {
         const port = (server.address() as any).port;
         const result = await httpGetJson<{ hello: string }>(`http://127.0.0.1:${port}/`);
         assert.deepStrictEqual(result, { hello: 'world' });
+        server.close();
+    });
+
+    test('httpGetJson sends a default User-Agent header', async () => {
+        const server = http.createServer((req, res) => {
+            assert.strictEqual(req.headers['user-agent'], 'Quickspaces VS Code Extension');
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+        });
+
+        await new Promise<void>(resolve => server.listen(0, resolve));
+        const port = (server.address() as any).port;
+        await httpGetJson<{ ok: boolean }>(`http://127.0.0.1:${port}/`);
         server.close();
     });
 
@@ -185,6 +213,32 @@ suite('HTTP helper tests', () => {
         );
 
         assert.deepStrictEqual(result, { access_token: 'abc123', expires_in: 60 });
+        server.close();
+    });
+
+    test('httpRequestJson supports PATCH requests', async () => {
+        const server = http.createServer((req, res) => {
+            assert.strictEqual(req.method, 'PATCH');
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', () => {
+                assert.strictEqual(body, JSON.stringify({ ref: 'main' }));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+            });
+        });
+
+        await new Promise<void>(resolve => server.listen(0, resolve));
+        const port = (server.address() as any).port;
+
+        const result = await httpRequestJson<{ ok: boolean }>(
+            `http://127.0.0.1:${port}/`,
+            'PATCH',
+            JSON.stringify({ ref: 'main' }),
+            { headers: { 'Content-Type': 'application/json' } },
+        );
+
+        assert.deepStrictEqual(result, { ok: true });
         server.close();
     });
 });
