@@ -100,6 +100,13 @@ suite('QuickspacesTreeProvider Tests', () => {
         ]);
     });
 
+    test('ControlPlaneItem defaults to expanded state', () => {
+        const cp: ControlPlane = { name: 'Test', url: 'https://example.com', provider: 'github' };
+        const cpItem = new ControlPlaneItem(cp);
+        const treeItem = cpItem.getTreeItem();
+        assert.strictEqual(treeItem.collapsibleState, vscode.TreeItemCollapsibleState.Expanded);
+    });
+
     test('getAccessToken requests provider-specific scopes', async () => {
         const originalGetSession = (vscode.authentication as any).getSession;
         let receivedProviderId: string | undefined;

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ControlPlane, ProviderInfo, Workspace } from './types';
+import { ControlPlane, ProviderInfo, Workspace, WorkspaceCreateRequest } from './types';
 import { trimTrailingSlashes } from './utils';
 import { httpGetJson, httpPostJson } from './http';
 
@@ -19,7 +19,17 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
     private controlPlanes: ControlPlane[] = [];
     private readonly workspaceStateKey = 'quickspaces.controlPlanes';
+    private readonly sessionStateKey = 'quickspaces.controlPlaneSessions';
+    private controlPlaneSessions = new Map<string, string>();
     private readonly workspaceCache = new Map<string, Workspace[]>();
+    private readonly authClientId = 'quickspaces-vscode';
+    private readonly authRequests = new Map<string, {
+        controlPlane: ControlPlane;
+        resolve: (token: string) => void;
+        reject: (reason: unknown) => void;
+        state: string;
+        timeout: NodeJS.Timeout;
+    }>();
     private isInitialized = false;
 
     constructor(private context: vscode.ExtensionContext) {
@@ -29,6 +39,8 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
     private async loadControlPlanes(): Promise<void> {
         this.controlPlanes = this.context.workspaceState.get(this.workspaceStateKey, []);
+        const sessionStore = this.context.workspaceState.get<Record<string, string>>(this.sessionStateKey, {});
+        this.controlPlaneSessions = new Map(Object.entries(sessionStore));
         this.isInitialized = true;
         this.updateContext();
         this.refresh();
@@ -36,6 +48,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
     private async saveControlPlanes(): Promise<void> {
         await this.context.workspaceState.update(this.workspaceStateKey, this.controlPlanes);
+        await this.context.workspaceState.update(this.sessionStateKey, Object.fromEntries(this.controlPlaneSessions.entries()));
         this.updateContext();
         this.refresh();
     }
@@ -266,14 +279,14 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             controlPlane.providerApiUrl = selectedProvider.apiUrl;
         }
 
-        const token = await this.getAccessToken(controlPlane, true);
-        if (!token) {
+        const providerToken = await this.getAccessToken(controlPlane, true);
+        if (!providerToken) {
             const providerLabel = controlPlane.provider ?? 'GitHub';
             vscode.window.showWarningMessage(`Authorize ${providerLabel} to access this repository provider.`);
             return;
         }
 
-        const repos = await this.listRepos(controlPlane, token);
+        const repos = await this.listRepos(controlPlane, providerToken);
         if (!repos.length) {
             vscode.window.showInformationMessage('No repositories were found after login.');
             return;
@@ -281,7 +294,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
         const providerId = controlPlane.provider?.toLowerCase() ?? 'github';
         const currentUsername = providerId === 'github'
-            ? await this.getGitHubUsername(controlPlane, token)
+            ? await this.getGitHubUsername(controlPlane, providerToken)
             : undefined;
 
         const quickPickItems = repos.map(repo => ({
@@ -327,16 +340,37 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
 
         const selectedWorkspace = selectedRepo.workspace;
-        const uri = selectedWorkspace.connection_url || selectedWorkspace.ref;
-        if (!uri) {
-            vscode.window.showInformationMessage('Selected repository does not expose a URL.');
+        if (!selectedWorkspace.repo_owner || !selectedWorkspace.repo_name) {
+            vscode.window.showErrorMessage('Selected repository does not expose owner/name metadata.');
             return;
         }
 
+        const defaultRef = selectedWorkspace.ref || 'main';
+        const ref = await vscode.window.showInputBox({
+            prompt: 'Enter branch, tag, or commit reference for the workspace',
+            placeHolder: 'main',
+            value: defaultRef,
+        });
+
+        if (!ref) {
+            return;
+        }
+
+        const workspaceRequest: WorkspaceCreateRequest = {
+            repoOwner: selectedWorkspace.repo_owner,
+            repoName: selectedWorkspace.repo_name,
+            repoProvider: selectedProvider.id,
+            ref,
+        };
+
+        const createUrl = `${trimTrailingSlashes(controlPlane.url)}/api/v1/workspaces`;
+
         try {
-            await vscode.env.openExternal(vscode.Uri.parse(uri));
-        } catch {
-            vscode.window.showErrorMessage('Unable to open the selected repository URL.');
+            await this.createWorkspace(createUrl, workspaceRequest, controlPlane, providerToken);
+            vscode.window.showInformationMessage(`Workspace created for ${selectedWorkspace.repo_owner}/${selectedWorkspace.repo_name}`);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unable to create workspace.';
+            vscode.window.showErrorMessage(`Failed to create workspace: ${message}`);
         }
     }
 
@@ -379,6 +413,150 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return typeof user.login === 'string' ? user.login : undefined;
         } catch {
             return undefined;
+        }
+    }
+
+    handleUri(uri: vscode.Uri): void {
+        if (!uri.path.startsWith('/quickspaces-auth')) {
+            return;
+        }
+
+        const query = new URLSearchParams(uri.query);
+        const code = query.get('code');
+        const state = query.get('state');
+
+        if (!code || !state) {
+            return;
+        }
+
+        for (const [key, request] of this.authRequests.entries()) {
+            if (request.state !== state) {
+                continue;
+            }
+
+            clearTimeout(request.timeout);
+            this.authRequests.delete(key);
+            void this.exchangeControlPlaneCode(request.controlPlane, code, uri.toString())
+                .then(token => {
+                    if (token) {
+                        this.setControlPlaneSession(request.controlPlane, token);
+                        request.resolve(token);
+                    } else {
+                        request.reject(new Error('Failed to exchange auth code for session token'));
+                    }
+                })
+                .catch(request.reject);
+            return;
+        }
+    }
+
+    private getControlPlaneKey(cp: ControlPlane): string {
+        return `${trimTrailingSlashes(cp.url)}|${cp.provider ?? ''}`;
+    }
+
+    private getExtensionId(): string {
+        return vscode.extensions.getExtension('UtopikCode.quickspaces')?.id ?? 'quickspaces';
+    }
+
+    private getControlPlaneSession(cp: ControlPlane): string | undefined {
+        return this.controlPlaneSessions.get(this.getControlPlaneKey(cp));
+    }
+
+    private setControlPlaneSession(cp: ControlPlane, token: string): void {
+        this.controlPlaneSessions.set(this.getControlPlaneKey(cp), token);
+        void this.saveControlPlanes();
+    }
+
+    private clearControlPlaneSession(cp: ControlPlane): void {
+        this.controlPlaneSessions.delete(this.getControlPlaneKey(cp));
+        void this.saveControlPlanes();
+    }
+
+    private async ensureControlPlaneSession(cp: ControlPlane): Promise<string | undefined> {
+        const existingToken = this.getControlPlaneSession(cp);
+        if (existingToken) {
+            return existingToken;
+        }
+
+        const state = `${Math.random().toString(36).slice(2)}-${Date.now()}`;
+        const redirectUri = `vscode://${this.getExtensionId()}/quickspaces-auth`;
+        const loginUrl = `${trimTrailingSlashes(cp.url)}/api/v1/auth/github-app/login` +
+            `?response_type=code&client_id=${encodeURIComponent(this.authClientId)}` +
+            `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+            `&state=${encodeURIComponent(state)}` +
+            `&scope=${encodeURIComponent('user repo')}`;
+
+        const promise = new Promise<string>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.authRequests.delete(this.getControlPlaneKey(cp));
+                reject(new Error('Control plane authentication timed out'));
+            }, 2 * 60 * 1000);
+
+            this.authRequests.set(this.getControlPlaneKey(cp), {
+                controlPlane: cp,
+                resolve,
+                reject,
+                state,
+                timeout,
+            });
+        });
+
+        await vscode.env.openExternal(vscode.Uri.parse(loginUrl));
+
+        try {
+            return await promise;
+        } catch (error) {
+            vscode.window.showErrorMessage('Control plane login failed. Please try again.');
+            return undefined;
+        }
+    }
+
+    private async exchangeControlPlaneCode(cp: ControlPlane, code: string, redirectUri: string): Promise<string | undefined> {
+        const tokenUrl = `${trimTrailingSlashes(cp.url)}/api/v1/auth/github/token`;
+        const body = `grant_type=authorization_code&code=${encodeURIComponent(code)}` +
+            `&client_id=${encodeURIComponent(this.authClientId)}` +
+            `&redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+        try {
+            const response = await httpPostJson<{ token?: string }>(tokenUrl, body, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+            });
+            return typeof response?.token === 'string' ? response.token : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
+    private async createWorkspace(
+        url: string,
+        requestBody: WorkspaceCreateRequest,
+        cp: ControlPlane,
+        token: string,
+    ): Promise<void> {
+        try {
+            await httpPostJson<unknown>(url, JSON.stringify(requestBody), {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+            });
+        } catch (error) {
+            if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
+                const refreshedToken = await this.getAccessToken(cp, true);
+                if (!refreshedToken) {
+                    throw new Error('Control plane authentication required');
+                }
+                await httpPostJson<unknown>(url, JSON.stringify(requestBody), {
+                    headers: {
+                        Authorization: `Bearer ${refreshedToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                });
+                return;
+            }
+            throw error;
         }
     }
 
@@ -524,7 +702,7 @@ export class ControlPlaneItem {
     constructor(public readonly controlPlane: ControlPlane) { }
 
     getTreeItem(): vscode.TreeItem {
-        const item = new vscode.TreeItem(this.controlPlane.name, vscode.TreeItemCollapsibleState.Collapsed);
+        const item = new vscode.TreeItem(this.controlPlane.name, vscode.TreeItemCollapsibleState.Expanded);
         const providerLabel = this.controlPlane.provider ? ` (${this.controlPlane.provider})` : '';
         item.tooltip = `${this.controlPlane.url}${providerLabel}`;
         item.iconPath = new vscode.ThemeIcon('server');

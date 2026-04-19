@@ -16,6 +16,7 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     context.subscriptions.push(treeView);
+    context.subscriptions.push(vscode.window.registerUriHandler(provider));
 
     context.subscriptions.push(
         vscode.commands.registerCommand('quickspaces.addControlPlane', async () => {

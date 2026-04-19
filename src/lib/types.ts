@@ -20,3 +20,13 @@ export interface Workspace {
     desired_state?: string;
     connection_url?: string;
 }
+
+export interface WorkspaceCreateRequest {
+    repoOwner: string;
+    repoName: string;
+    repoProvider: string;
+    ref: string;
+    desiredState?: string | null;
+    labels?: Record<string, string> | null;
+    ttlPolicy?: string | null;
+}
