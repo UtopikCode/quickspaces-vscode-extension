@@ -150,7 +150,7 @@
   "devDependencies": {
     "@types/vscode": "^1.110.0",
     "@types/mocha": "^10.0.10",
-    "@types/node": "22.x",
+    "@types/node": "25.x",
     "typescript-eslint": "^8.56.1",
     "eslint": "^9.39.3",
     "esbuild": "^0.27.3",
