@@ -40,17 +40,8 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         const scopes = this.getProviderScopes();
 
         try {
-            const existingSession = await vscode.authentication.getSession('github', scopes, { createIfNone: false });
-            if (existingSession) {
-                return existingSession.accessToken;
-            }
-
-            if (!createIfNone) {
-                return undefined;
-            }
-
-            const newSession = await vscode.authentication.getSession('github', scopes, { createIfNone: true });
-            return newSession?.accessToken;
+            const session = await vscode.authentication.getSession('github', scopes, { createIfNone });
+            return session?.accessToken;
         } catch {
             return undefined;
         }
@@ -477,8 +468,13 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             if (normalized.length > 0) {
                 return normalized;
             }
-        } catch {
-            // ignore and fall back
+        } catch (error) {
+            if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
+                const refreshedToken = await this.getAccessToken(controlPlane, true);
+                if (refreshedToken) {
+                    return await this.listRepos(controlPlane, refreshedToken);
+                }
+            }
         }
 
         const fallbackUrl = `${trimTrailingSlashes(controlPlane.url)}/api/v1/workspaces`;
@@ -487,7 +483,13 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
                 headers: { Authorization: `Bearer ${token}` },
             });
             return Array.isArray(workspaces) ? workspaces : [];
-        } catch {
+        } catch (error) {
+            if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
+                const refreshedToken = await this.getAccessToken(controlPlane, true);
+                if (refreshedToken) {
+                    return await this.listRepos(controlPlane, refreshedToken);
+                }
+            }
             return [];
         }
     }

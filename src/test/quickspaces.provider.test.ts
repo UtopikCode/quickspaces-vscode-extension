@@ -31,26 +31,10 @@ class FakeWorkspaceState implements vscode.Memento {
     }
 }
 
-const originalRegisterUriHandler = vscode.window.registerUriHandler;
-
-function disableUriHandlerRegistration(): void {
-    (vscode.window as any).registerUriHandler = () => ({ dispose: () => undefined });
-}
-
-function restoreUriHandlerRegistration(): void {
-    (vscode.window as any).registerUriHandler = originalRegisterUriHandler;
-}
-
 suite('QuickspacesTreeProvider Tests', () => {
-    suiteSetup(() => {
-        disableUriHandlerRegistration();
-    });
-
-    suiteTeardown(() => {
-        restoreUriHandlerRegistration();
-    });
     const fakeContext = {
         workspaceState: new FakeWorkspaceState(),
+        globalState: new FakeWorkspaceState(),
         subscriptions: [] as vscode.Disposable[],
         extension: { id: 'test.extension' },
     } as unknown as vscode.ExtensionContext;
@@ -97,14 +81,16 @@ suite('QuickspacesTreeProvider Tests', () => {
         assert.strictEqual(treeItem.collapsibleState, vscode.TreeItemCollapsibleState.Expanded);
     });
 
-    test('getAccessToken requests GitHub scopes', async () => {
+    test('getAccessToken requests GitHub scopes and returns the access token', async () => {
         const originalGetSession = (vscode.authentication as any).getSession;
         let receivedProviderId: string | undefined;
         let receivedScopes: readonly string[] | undefined;
+        let receivedCreateIfNone: boolean | undefined;
 
         (vscode.authentication as any).getSession = async (providerId: string, scopes: readonly string[], options: { createIfNone: boolean }) => {
             receivedProviderId = providerId;
             receivedScopes = scopes;
+            receivedCreateIfNone = options.createIfNone;
             return { accessToken: 'test-token' } as any;
         };
 
@@ -114,27 +100,19 @@ suite('QuickspacesTreeProvider Tests', () => {
         assert.strictEqual(token, 'test-token');
         assert.strictEqual(receivedProviderId, 'github');
         assert.deepStrictEqual(receivedScopes, ['repo']);
+        assert.strictEqual(receivedCreateIfNone, true);
 
         (vscode.authentication as any).getSession = originalGetSession;
     });
 
-    test('getAccessToken defaults to GitHub and uses default scopes when provider is missing', async () => {
+    test('getAccessToken returns undefined when no session exists and createIfNone is false', async () => {
         const originalGetSession = (vscode.authentication as any).getSession;
-        let receivedProviderId: string | undefined;
-        let receivedScopes: readonly string[] | undefined;
-
-        (vscode.authentication as any).getSession = async (providerId: string, scopes: readonly string[], options: { createIfNone: boolean }) => {
-            receivedProviderId = providerId;
-            receivedScopes = scopes;
-            return { accessToken: 'fallback-token' } as any;
-        };
+        (vscode.authentication as any).getSession = async () => undefined;
 
         const provider = new QuickspacesTreeProvider(fakeContext);
-        const token = await provider['getAccessToken']({ name: 'Test', url: 'https://example.com' }, true);
+        const token = await provider['getAccessToken']({ name: 'Test', url: 'https://example.com' }, false);
 
-        assert.strictEqual(token, 'fallback-token');
-        assert.strictEqual(receivedProviderId, 'github');
-        assert.deepStrictEqual(receivedScopes, ['repo']);
+        assert.strictEqual(token, undefined);
 
         (vscode.authentication as any).getSession = originalGetSession;
     });
