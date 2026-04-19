@@ -15,6 +15,12 @@ export interface ProviderInfo {
     scope?: string;
     repoListUrl?: string;
     repoListPath?: string;
+    branchListUrl?: string;
+    branchListPath?: string;
+    branchCreateUrl?: string;
+    branchCreatePath?: string;
+    branchCreateBodyTemplate?: string;
+    branchCreateMethod?: string;
 }
 
 export interface WorkspaceInfo {

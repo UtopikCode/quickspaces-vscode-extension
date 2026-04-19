@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { ControlPlane, ProviderInfo, WorkspaceInfo, CreateWorkspaceRequest } from './types';
 import { ControlPlaneItem, WorkspaceItem, StatusItem } from './treeItems';
-import { trimTrailingSlashes } from './utils';
+import { DEFAULT_REPO_PROVIDERS } from './repoProviders';
+import { trimLeadingSlashes, trimTrailingSlashes } from './utils';
 import { httpGetJson, httpPostJson, httpRequestJson } from './http';
 
 type TreeItem = ControlPlaneItem | WorkspaceItem | StatusItem;
@@ -41,18 +42,23 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
     }
 
     private async getAccessToken(cp: ControlPlane, createIfNone: boolean): Promise<string | undefined> {
-        const scopes = this.getProviderScopes();
+        const provider = this.getProviderInfo(cp.provider ?? '', cp);
+        const authProviderId = provider?.id ?? cp.provider ?? 'github';
+        const scopes = this.getProviderScopes(provider);
 
         try {
-            const session = await vscode.authentication.getSession('github', scopes, { createIfNone });
+            const session = await vscode.authentication.getSession(authProviderId, scopes, { createIfNone });
             return session?.accessToken;
         } catch {
             return undefined;
         }
     }
 
-    private getProviderScopes(): string[] {
-        return ['repo'];
+    private getProviderScopes(provider?: ProviderInfo): string[] {
+        if (!provider || !provider.scope) {
+            return [];
+        }
+        return provider.scope.split(/[\s,]+/).filter(Boolean);
     }
 
     private getControlPlaneCacheKey(cp: ControlPlane): string {
@@ -72,13 +78,15 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             }
 
             const providers = await this.fetchProvidersFromControlPlane(normalizedUrl, token);
-            if (providers.length) {
-                this.providerCacheByControlPlaneUrl.set(normalizedUrl, providers);
-                return providers;
-            }
+            const mergedProviders = providers.length
+                ? this.mergeProviderLists(DEFAULT_REPO_PROVIDERS, providers)
+                : DEFAULT_REPO_PROVIDERS;
+
+            this.providerCacheByControlPlaneUrl.set(normalizedUrl, mergedProviders);
+            return mergedProviders;
         }
 
-        return [];
+        return DEFAULT_REPO_PROVIDERS;
     }
 
     private async fetchProvidersFromControlPlane(controlPlaneUrl: string, token?: string): Promise<ProviderInfo[]> {
@@ -126,6 +134,12 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
                     return undefined;
                 }
 
+                const scope = Array.isArray(provider.scope)
+                    ? provider.scope.filter((value: unknown): value is string => typeof value === 'string').join(' ')
+                    : typeof provider.scope === 'string'
+                        ? provider.scope
+                        : undefined;
+
                 return {
                     id: provider.slug.toLowerCase(),
                     label: provider.name,
@@ -137,9 +151,15 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
                         ? provider.authorizationUrl
                         : undefined,
                     tokenUrl: typeof provider.tokenUrl === 'string' ? provider.tokenUrl : undefined,
-                    scope: typeof provider.scope === 'string' ? provider.scope : undefined,
+                    scope,
                     repoListUrl: typeof provider.repoListUrl === 'string' ? provider.repoListUrl : undefined,
                     repoListPath: typeof provider.repoListPath === 'string' ? provider.repoListPath : undefined,
+                    branchListUrl: typeof provider.branchListUrl === 'string' ? provider.branchListUrl : undefined,
+                    branchListPath: typeof provider.branchListPath === 'string' ? provider.branchListPath : undefined,
+                    branchCreateUrl: typeof provider.branchCreateUrl === 'string' ? provider.branchCreateUrl : undefined,
+                    branchCreatePath: typeof provider.branchCreatePath === 'string' ? provider.branchCreatePath : undefined,
+                    branchCreateBodyTemplate: typeof provider.branchCreateBodyTemplate === 'string' ? provider.branchCreateBodyTemplate : undefined,
+                    branchCreateMethod: typeof provider.branchCreateMethod === 'string' ? provider.branchCreateMethod : undefined,
                 };
             })
             .filter((provider): provider is ProviderInfo => provider !== undefined);
@@ -166,7 +186,127 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             }
         }
 
+        return DEFAULT_REPO_PROVIDERS.find(provider => provider.id === providerId);
+    }
+
+    private mergeProviderLists(defaultProviders: ProviderInfo[], remoteProviders: ProviderInfo[]): ProviderInfo[] {
+        const providerMap = new Map<string, ProviderInfo>();
+
+        for (const provider of defaultProviders) {
+            providerMap.set(provider.id, provider);
+        }
+
+        for (const provider of remoteProviders) {
+            const existing = providerMap.get(provider.id);
+            providerMap.set(provider.id, existing ? { ...existing, ...provider } : provider);
+        }
+
+        return Array.from(providerMap.values());
+    }
+
+    private hasBranchCreateConfig(provider?: ProviderInfo): boolean {
+        return Boolean(provider?.branchCreateUrl || provider?.branchCreatePath);
+    }
+
+    private getProviderBranchUrl(provider: ProviderInfo | undefined, controlPlane: ControlPlane, workspace: WorkspaceInfo): string | undefined {
+        if (!provider) {
+            return undefined;
+        }
+
+        const baseUrl = provider.apiUrl || controlPlane.providerApiUrl;
+        if (!baseUrl) {
+            return undefined;
+        }
+
+        if (provider.branchListUrl) {
+            return this.applyTemplate(provider.branchListUrl, this.buildTemplateVariables(provider, workspace));
+        }
+
+        if (provider.branchListPath) {
+            const path = this.applyTemplate(provider.branchListPath, this.buildTemplateVariables(provider, workspace));
+            return `${trimTrailingSlashes(baseUrl)}/${trimLeadingSlashes(path)}`;
+        }
+
         return undefined;
+    }
+
+    private getProviderBranchCreateRequest(
+        provider: ProviderInfo | undefined,
+        controlPlane: ControlPlane,
+        workspace: WorkspaceInfo,
+        newBranch: string,
+        sourceBranch: string,
+        token: string,
+    ): { url: string; method: string; body?: string; headers: Record<string, string> } | undefined {
+        if (!provider) {
+            return undefined;
+        }
+
+        const baseUrl = provider.apiUrl || controlPlane.providerApiUrl;
+        if (!baseUrl) {
+            return undefined;
+        }
+
+        const variables = this.buildTemplateVariables(provider, workspace, newBranch, sourceBranch);
+        let url: string | undefined;
+
+        if (provider.branchCreateUrl) {
+            url = this.applyTemplate(provider.branchCreateUrl, variables);
+        } else if (provider.branchCreatePath) {
+            const path = this.applyTemplate(provider.branchCreatePath, variables);
+            url = `${trimTrailingSlashes(baseUrl)}/${trimLeadingSlashes(path)}`;
+        }
+
+        if (!url) {
+            return undefined;
+        }
+
+        const method = provider.branchCreateMethod?.toUpperCase() || 'POST';
+        const body = provider.branchCreateBodyTemplate
+            ? this.applyTemplate(provider.branchCreateBodyTemplate, variables)
+            : JSON.stringify({ branch: newBranch, ref: sourceBranch });
+
+        return {
+            url,
+            method,
+            body,
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+        };
+    }
+
+    private buildTemplateVariables(
+        provider: ProviderInfo,
+        workspace: WorkspaceInfo,
+        newBranch?: string,
+        sourceBranch?: string,
+    ): Record<string, string | undefined> {
+        const repoPath = workspace.repo_owner && workspace.repo_name ? `${workspace.repo_owner}/${workspace.repo_name}` : undefined;
+        return {
+            providerId: provider.id,
+            provider: provider.id,
+            repo_owner: workspace.repo_owner,
+            repo_name: workspace.repo_name,
+            repoOwner: workspace.repo_owner,
+            repoName: workspace.repo_name,
+            repo_path: repoPath,
+            repoPath: repoPath,
+            branch: sourceBranch,
+            ref: sourceBranch,
+            sourceBranch,
+            source_branch: sourceBranch,
+            newBranch,
+            new_branch: newBranch,
+        };
+    }
+
+    private applyTemplate(template: string, values: Record<string, string | undefined>): string {
+        return template.replace(/\{(\w+)\}/g, (_match, key) => {
+            const value = values[key];
+            return typeof value === 'string' ? value : '';
+        });
     }
 
     private controlPlaneDescription(): string {
@@ -344,7 +484,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
         const providerToken = await this.getAccessToken(controlPlane, true);
         if (!providerToken) {
-            vscode.window.showWarningMessage('Sign in to GitHub to access this repository provider.');
+            vscode.window.showWarningMessage('Sign in to authenticate with the configured repository provider.');
             return;
         }
 
@@ -517,7 +657,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         const providers = await this.getAvailableProviders(controlPlane, providerToken);
         if (!providers.length) {
             if (!providerToken) {
-                vscode.window.showWarningMessage('Sign in to GitHub to list repository providers for this control plane.');
+                vscode.window.showWarningMessage('Sign in to authenticate with the configured control plane.');
                 return;
             }
             vscode.window.showErrorMessage('No repository providers are configured for this control plane.');
@@ -569,7 +709,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
 
         if (!providerToken) {
-            vscode.window.showWarningMessage('Sign in to GitHub to access this repository provider.');
+            vscode.window.showWarningMessage('Sign in to authenticate with the selected repository provider.');
             return;
         }
 
@@ -579,10 +719,6 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const currentUsername = controlPlane.provider?.toLowerCase() === 'github'
-            ? await this.getGitHubUsername(controlPlane, providerToken)
-            : undefined;
-
         const quickPickItems = repos.map(repo => ({
             label: repo.repo_owner && repo.repo_name ? `${repo.repo_owner}/${repo.repo_name}` : repo.workspace_id ?? repo.ref ?? 'Repository',
             description: repo.actual_state || repo.desired_state || '',
@@ -590,9 +726,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             workspace: repo,
         } as vscode.QuickPickItem & { workspace: WorkspaceInfo }));
 
-        const ownedItems = currentUsername
-            ? quickPickItems.filter(item => item.workspace.repo_owner === currentUsername)
-            : quickPickItems;
+        const ownedItems = quickPickItems;
 
         const quickPick = vscode.window.createQuickPick<vscode.QuickPickItem & { workspace: WorkspaceInfo }>();
         quickPick.placeholder = 'Search or select a repository';
@@ -631,19 +765,27 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
+        const provider = this.getProviderInfo(controlPlane.provider ?? '', controlPlane);
         const branchNames = await this.listRepoBranches(controlPlane, selectedWorkspace, providerToken);
+        const canCreateBranch = this.hasBranchCreateConfig(provider);
         let selectedRef: string | undefined;
 
         if (branchNames.length) {
-            const branchPick = await vscode.window.showQuickPick(
-                [
-                    { label: '$(plus) Create new branch...', description: 'Create a new branch for this repository', createBranch: true },
-                    ...branchNames.map(branch => ({ label: branch, branch })),
-                ] as Array<vscode.QuickPickItem & { branch?: string; createBranch?: true }>,
-                {
-                    placeHolder: 'Select an existing branch or create a new one',
-                },
-            );
+            const branchPickItems: Array<vscode.QuickPickItem & { branch?: string; createBranch?: true }> = [
+                ...branchNames.map(branch => ({ label: branch, branch })),
+            ];
+
+            if (canCreateBranch) {
+                branchPickItems.unshift({
+                    label: '$(plus) Create new branch...',
+                    description: 'Create a new branch for this repository',
+                    createBranch: true,
+                });
+            }
+
+            const branchPick = await vscode.window.showQuickPick(branchPickItems, {
+                placeHolder: 'Select an existing branch or create a new one',
+            });
 
             if (!branchPick) {
                 return;
@@ -665,7 +807,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
                     return;
                 }
 
-                const created = await this.createRepoBranch(controlPlane, selectedWorkspace, newBranch, baseBranch, providerToken);
+                const created = await this.createRepoBranch(controlPlane, provider, selectedWorkspace, newBranch, baseBranch, providerToken);
                 if (!created) {
                     vscode.window.showErrorMessage('Unable to create the new branch.');
                     return;
@@ -689,7 +831,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         const workspaceRequest: CreateWorkspaceRequest = {
             repoOwner: selectedWorkspace.repo_owner,
             repoName: selectedWorkspace.repo_name,
-            repoProvider: controlPlane.provider ?? 'github',
+            repoProvider: selectedProvider?.id ?? controlPlane.provider ?? '',
             ref: selectedRef,
         };
 
@@ -706,7 +848,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
     }
 
-    private async listRepos(controlPlane: ControlPlane, token: string): Promise<WorkspaceInfo[]> {
+    private async listRepos(controlPlane: ControlPlane, token: string, allowRetry = true): Promise<WorkspaceInfo[]> {
         const repoUrl = this.getProviderRepoUrl(controlPlane);
         if (!repoUrl) {
             vscode.window.showErrorMessage('Repository provider is missing repoListUrl or repoListPath configuration.');
@@ -726,10 +868,10 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             this.logDebug(`No repositories found at ${repoUrl}; falling back to control plane workspace list`);
         } catch (error) {
             this.logError(`Failed to list repos from ${repoUrl}: ${error instanceof Error ? error.message : String(error)}`);
-            if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
+            if (allowRetry && error instanceof Error && /HTTP\s+401/i.test(error.message)) {
                 const refreshedToken = await this.getAccessToken(controlPlane, true);
-                if (refreshedToken) {
-                    return await this.listRepos(controlPlane, refreshedToken);
+                if (refreshedToken && refreshedToken !== token) {
+                    return await this.listRepos(controlPlane, refreshedToken, false);
                 }
             }
         }
@@ -747,8 +889,8 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             this.logError(`Failed fallback workspace list from ${fallbackUrl}: ${error instanceof Error ? error.message : String(error)}`);
             if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
                 const refreshedToken = await this.getAccessToken(controlPlane, true);
-                if (refreshedToken) {
-                    return await this.listRepos(controlPlane, refreshedToken);
+                if (refreshedToken && refreshedToken !== token) {
+                    return await this.listRepos(controlPlane, refreshedToken, false);
                 }
             }
             return [];
@@ -760,33 +902,19 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return [];
         }
 
-        const providerId = controlPlane.provider?.toLowerCase();
-        const provider = this.getProviderInfo(providerId ?? '', controlPlane);
-        const baseUrl = provider?.apiUrl || controlPlane.providerApiUrl;
-        if (!baseUrl) {
-            return [];
-        }
-
-        const normalized = trimTrailingSlashes(baseUrl);
-        let url: string | undefined;
-
-        if (providerId === 'github') {
-            url = `${normalized}/repos/${workspace.repo_owner}/${workspace.repo_name}/branches?per_page=100`;
-        } else if (providerId === 'gitlab') {
-            url = `${normalized}/projects/${encodeURIComponent(`${workspace.repo_owner}/${workspace.repo_name}`)}/repository/branches?per_page=100`;
-        }
-
-        if (!url) {
+        const provider = this.getProviderInfo(controlPlane.provider ?? '', controlPlane);
+        const branchUrl = this.getProviderBranchUrl(provider, controlPlane, workspace);
+        if (!branchUrl) {
             return [];
         }
 
         try {
-            const branches = await httpGetJson<unknown>(url, {
+            const branches = await httpGetJson<unknown>(branchUrl, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             return this.normalizeBranchList(branches);
         } catch (error) {
-            this.logError(`Failed to list branches from ${url}: ${error instanceof Error ? error.message : String(error)}`);
+            this.logError(`Failed to list branches from ${branchUrl}: ${error instanceof Error ? error.message : String(error)}`);
             return [];
         }
     }
@@ -810,6 +938,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
     private async createRepoBranch(
         controlPlane: ControlPlane,
+        provider: ProviderInfo | undefined,
         workspace: WorkspaceInfo,
         newBranch: string,
         sourceBranch: string,
@@ -819,68 +948,19 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return false;
         }
 
-        const providerId = controlPlane.provider?.toLowerCase();
-        const provider = this.getProviderInfo(providerId ?? '', controlPlane);
-        const baseUrl = provider?.apiUrl || controlPlane.providerApiUrl;
-        if (!baseUrl) {
+        const request = this.getProviderBranchCreateRequest(provider, controlPlane, workspace, newBranch, sourceBranch, token);
+        if (!request) {
             return false;
         }
 
-        const normalized = trimTrailingSlashes(baseUrl);
         try {
-            if (providerId === 'github') {
-                const refUrl = `${normalized}/repos/${workspace.repo_owner}/${workspace.repo_name}/git/ref/heads/${encodeURIComponent(sourceBranch)}`;
-                const ref = await httpGetJson<{ object: { sha: string } }>(refUrl, {
-                    headers: { Authorization: `Bearer ${token}` },
-                });
-
-                const createUrl = `${normalized}/repos/${workspace.repo_owner}/${workspace.repo_name}/git/refs`;
-                await httpRequestJson<void>(createUrl, 'POST', JSON.stringify({
-                    ref: `refs/heads/${newBranch}`,
-                    sha: ref.object.sha,
-                }), {
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                        'Content-Type': 'application/json',
-                    },
-                });
-                return true;
-            }
-
-            if (providerId === 'gitlab') {
-                const createUrl = `${normalized}/projects/${encodeURIComponent(`${workspace.repo_owner}/${workspace.repo_name}`)}/repository/branches`;
-                await httpRequestJson<void>(createUrl, 'POST', JSON.stringify({
-                    branch: newBranch,
-                    ref: sourceBranch,
-                }), {
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                        'Content-Type': 'application/json',
-                    },
-                });
-                return true;
-            }
+            await httpRequestJson<void>(request.url, request.method, request.body ?? undefined, {
+                headers: request.headers,
+            });
+            return true;
         } catch (error) {
             this.logError(`Failed to create branch ${newBranch}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-
-        return false;
-    }
-
-    private async getGitHubUsername(cp: ControlPlane, token: string): Promise<string | undefined> {
-        const baseUrl = cp.providerApiUrl || 'https://api.github.com';
-        if (!baseUrl) {
-            return undefined;
-        }
-
-        try {
-            const normalizedBaseUrl = trimTrailingSlashes(baseUrl);
-            const user = await httpGetJson<{ login: string }>(`${normalizedBaseUrl}/user`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            return typeof user.login === 'string' ? user.login : undefined;
-        } catch {
-            return undefined;
+            return false;
         }
     }
 
@@ -952,21 +1032,14 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return resolved;
         }
 
-        if (providerId === 'github') {
-            const resolved = `${normalized}/user/repos?per_page=100`;
-            this.logDebug(`Using GitHub default repo endpoint ${resolved}`);
+        if (provider?.repoListUrl) {
+            if (this.isAbsoluteUrl(provider.repoListUrl)) {
+                this.logDebug(`Using absolute repoListUrl: ${provider.repoListUrl}`);
+                return provider.repoListUrl;
+            }
+            const resolved = `${normalized}${provider.repoListUrl.startsWith('/') ? '' : '/'}${provider.repoListUrl}`;
+            this.logDebug(`Resolved repoListUrl to ${resolved}`);
             return resolved;
-        }
-
-        if (providerId === 'gitlab') {
-            const resolved = `${normalized}/projects?membership=true&per_page=100`;
-            this.logDebug(`Using GitLab default repo endpoint ${resolved}`);
-            return resolved;
-        }
-
-        if (this.isFullProviderRepoUrl(normalized)) {
-            this.logDebug(`Using full provider URL ${normalized}`);
-            return normalized;
         }
 
         this.logError(`Provider ${providerId ?? 'unknown'} is missing repoListUrl or repoListPath configuration`);
@@ -1149,7 +1222,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
         const token = await this.getAccessToken(cp, true);
         if (!token) {
-            return [new StatusItem('Authorization required', 'Authorize GitHub to access this repository provider', 'warning')];
+            return [new StatusItem('Authorization required', 'Authorize the repository provider to access this control plane', 'warning')];
         }
 
         const url = `${trimTrailingSlashes(cp.url)}/api/v1/workspaces`;
