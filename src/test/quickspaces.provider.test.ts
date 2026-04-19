@@ -8,6 +8,7 @@ import {
     StatusItem,
     httpGetJson,
     httpPostJson,
+    httpRequestJson,
     ControlPlane,
 } from '../extension';
 
@@ -72,6 +73,19 @@ suite('QuickspacesTreeProvider Tests', () => {
             { name: 'Two', url: 'https://two.example' },
         ];
         assert.strictEqual(provider['controlPlaneDescription'](), '2 control planes');
+    });
+
+    test('resolveWorkspace returns workspace and control plane container', () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const workspace = { workspace_id: 'ws-123', repo_owner: 'octo', repo_name: 'hello' };
+        provider['controlPlanes'] = [{ name: 'Main', url: 'https://example.com' }];
+
+        const workspaceItem = new WorkspaceItem(workspace, 'Main');
+        const resolved = provider['resolveWorkspace'](workspaceItem);
+
+        assert.ok(resolved);
+        assert.deepStrictEqual(resolved?.workspace, workspace);
+        assert.deepStrictEqual(resolved?.controlPlane, provider['controlPlanes'][0]);
     });
 
     test('ControlPlaneItem defaults to expanded state', () => {
@@ -199,6 +213,32 @@ suite('HTTP helper tests', () => {
         );
 
         assert.deepStrictEqual(result, { access_token: 'abc123', expires_in: 60 });
+        server.close();
+    });
+
+    test('httpRequestJson supports PATCH requests', async () => {
+        const server = http.createServer((req, res) => {
+            assert.strictEqual(req.method, 'PATCH');
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', () => {
+                assert.strictEqual(body, JSON.stringify({ ref: 'main' }));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+            });
+        });
+
+        await new Promise<void>(resolve => server.listen(0, resolve));
+        const port = (server.address() as any).port;
+
+        const result = await httpRequestJson<{ ok: boolean }>(
+            `http://127.0.0.1:${port}/`,
+            'PATCH',
+            JSON.stringify({ ref: 'main' }),
+            { headers: { 'Content-Type': 'application/json' } },
+        );
+
+        assert.deepStrictEqual(result, { ok: true });
         server.close();
     });
 });

@@ -14,6 +14,7 @@
     "onCommand:quickspaces.addControlPlane",
     "onCommand:quickspaces.addWorkspace",
     "onCommand:quickspaces.configureControlPlane",
+    "onCommand:quickspaces.configureWorkspace",
     "onCommand:quickspaces.refresh"
   ],
   "categories": [
@@ -62,6 +63,11 @@
         "icon": "$(settings-gear)"
       },
       {
+        "command": "quickspaces.configureWorkspace",
+        "title": "Configure Workspace",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "quickspaces.refresh",
         "title": "Refresh",
         "icon": "$(refresh)"
@@ -95,6 +101,11 @@
           "command": "quickspaces.configureControlPlane",
           "when": "view == quickspacesView && viewItem == controlPlane",
           "group": "inline@2"
+        },
+        {
+          "command": "quickspaces.configureWorkspace",
+          "when": "view == quickspacesView && viewItem == workspace",
+          "group": "inline@4"
         }
       ],
       "view/item/context": [
@@ -112,6 +123,11 @@
           "command": "quickspaces.configureControlPlane",
           "when": "view == quickspacesView && viewItem == controlPlane",
           "group": "inline@3"
+        },
+        {
+          "command": "quickspaces.configureWorkspace",
+          "when": "view == quickspacesView && viewItem == workspace",
+          "group": "inline@4"
         }
       ]
     }

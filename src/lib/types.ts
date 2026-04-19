@@ -19,12 +19,19 @@ export interface ProviderInfo {
 
 export interface WorkspaceInfo {
     workspace_id?: string;
+    workspaceId?: string;
     repo_owner?: string;
     repo_name?: string;
+    repoName?: string;
     ref?: string;
     actual_state?: string;
+    actualState?: string;
     desired_state?: string;
+    desiredState?: string;
     connection_url?: string;
+    connectionUrl?: string;
+    labels?: Record<string, string> | null;
+    ttlPolicy?: string | null;
 }
 
 export interface CreateWorkspaceRequest {

@@ -22,11 +22,16 @@ export class WorkspaceItem {
             : this.workspace.workspace_id ?? this.workspace.ref ?? 'Workspace';
 
         const description = this.workspace.actual_state || this.workspace.desired_state || '';
-        const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+        const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None) as vscode.TreeItem & {
+            workspace?: WorkspaceInfo;
+            controlPlaneName?: string;
+        };
         item.description = description;
-        item.tooltip = this.workspace.connection_url || this.workspace.ref || label;
+        item.tooltip = this.workspace.connection_url || this.workspace.connectionUrl || this.workspace.ref || label;
         item.iconPath = new vscode.ThemeIcon('repo');
         item.contextValue = 'workspace';
+        item.workspace = this.workspace;
+        item.controlPlaneName = this.controlPlaneName;
         return item;
     }
 }

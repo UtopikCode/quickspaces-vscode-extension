@@ -40,6 +40,12 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('quickspaces.configureWorkspace', async (workspaceOrItem: WorkspaceInfo | WorkspaceItem | vscode.TreeItem | undefined) => {
+            await provider.configureWorkspace(workspaceOrItem);
+        }),
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('quickspaces.refresh', () => {
             provider.refresh();
             vscode.window.showInformationMessage('Quickspaces refreshed');
@@ -50,4 +56,4 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() { }
 
 export type { ControlPlane, WorkspaceInfo } from './lib/types';
-export { QuickspacesTreeProvider, ControlPlaneItem, WorkspaceItem, StatusItem, httpGetJson, httpPostJson } from './lib/treeProvider';
+export { QuickspacesTreeProvider, ControlPlaneItem, WorkspaceItem, StatusItem, httpGetJson, httpPostJson, httpRequestJson } from './lib/treeProvider';
