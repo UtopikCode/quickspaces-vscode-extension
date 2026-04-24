@@ -822,7 +822,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
     }
 
-    private async listRepos(controlPlane: ControlPlane, token: string, allowRetry = true): Promise<WorkspaceInfo[]> {
+    private async listRepos(controlPlane: ControlPlane, token: string): Promise<WorkspaceInfo[]> {
         const repoUrl = this.getProviderRepoUrl(controlPlane);
         if (!repoUrl) {
             vscode.window.showErrorMessage('Repository provider is missing repoListUrl or repoListPath configuration.');
@@ -842,12 +842,6 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             this.logDebug(`No repositories found at ${repoUrl}; falling back to control plane workspace list`);
         } catch (error) {
             this.logError(`Failed to list repos from ${repoUrl}: ${error instanceof Error ? error.message : String(error)}`);
-            if (allowRetry && error instanceof Error && /HTTP\s+401/i.test(error.message)) {
-                const refreshedToken = await this.getAccessToken(controlPlane, true);
-                if (refreshedToken && refreshedToken !== token) {
-                    return await this.listRepos(controlPlane, refreshedToken, false);
-                }
-            }
         }
 
         const fallbackUrl = `${trimTrailingSlashes(controlPlane.url)}/api/v1/workspaces`;
@@ -861,12 +855,6 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return Array.isArray(workspaces) ? workspaces : [];
         } catch (error) {
             this.logError(`Failed fallback workspace list from ${fallbackUrl}: ${error instanceof Error ? error.message : String(error)}`);
-            if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
-                const refreshedToken = await this.getAccessToken(controlPlane, true);
-                if (refreshedToken && refreshedToken !== token) {
-                    return await this.listRepos(controlPlane, refreshedToken, false);
-                }
-            }
             return [];
         }
     }
@@ -989,32 +977,15 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
     private async createWorkspace(
         url: string,
         requestBody: CreateWorkspaceRequest,
-        cp: ControlPlane,
+        _cp: ControlPlane,
         token: string,
     ): Promise<void> {
-        try {
-            await httpPostJson<unknown>(url, JSON.stringify(requestBody), {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-            });
-        } catch (error) {
-            if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
-                const refreshedToken = await this.getAccessToken(cp, true);
-                if (!refreshedToken) {
-                    throw new Error('Control plane authentication required');
-                }
-                await httpPostJson<unknown>(url, JSON.stringify(requestBody), {
-                    headers: {
-                        Authorization: `Bearer ${refreshedToken}`,
-                        'Content-Type': 'application/json',
-                    },
-                });
-                return;
-            }
-            throw error;
-        }
+        await httpPostJson<unknown>(url, JSON.stringify(requestBody), {
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+        });
     }
 
     private async promptForExecutionProfile(): Promise<ExecutionProfile | undefined> {
@@ -1257,7 +1228,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return cached.map(workspace => new WorkspaceItem(workspace, cp.name));
         }
 
-        const token = await this.getAccessToken(cp, true);
+        const token = await this.getAccessToken(cp, false);
         if (!token) {
             return [new StatusItem('Authorization required', 'Authorize the repository provider to access this control plane', 'warning')];
         }
@@ -1278,27 +1249,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unexpected error';
             if (typeof message === 'string' && /HTTP\s+(401|403)/.test(message)) {
-                const refreshedToken = await this.getAccessToken(cp, true);
-                if (!refreshedToken) {
-                    return [new StatusItem('Authentication required', 'Sign in again to continue', 'warning')];
-                }
-
-                try {
-                    const workspaces = await httpGetJson<WorkspaceInfo[]>(url, {
-                        headers: { Authorization: `Bearer ${refreshedToken}` },
-                    });
-                    const normalized = this.normalizeWorkspaces(Array.isArray(workspaces) ? workspaces : []);
-                    this.workspaceCacheByControlPlaneUrl.set(this.getControlPlaneCacheKey(cp), normalized);
-
-                    if (!normalized.length) {
-                        return [new StatusItem('No workspaces found', 'The control plane returned an empty list', 'info')];
-                    }
-
-                    return normalized.map(workspace => new WorkspaceItem(workspace, cp.name));
-                } catch (retryError) {
-                    const retryMessage = retryError instanceof Error ? retryError.message : 'Unexpected error';
-                    return [new StatusItem('Authentication required', retryMessage, 'warning')];
-                }
+                return [new StatusItem('Authentication required', 'Sign in again to continue', 'warning')];
             }
             return [new StatusItem('Unable to load workspaces', message, 'error')];
         }
