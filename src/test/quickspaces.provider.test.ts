@@ -9,6 +9,7 @@ import {
     httpGetJson,
     httpPostJson,
     httpRequestJson,
+    httpProbe,
     ControlPlane,
 } from '../extension';
 
@@ -130,6 +131,44 @@ suite('QuickspacesTreeProvider Tests', () => {
 
         (vscode.authentication as any).getSession = originalGetSession;
     });
+
+    test('validateControlPlaneUrl rejects unreachable URLs and shows an error', async () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const originalShowError = vscode.window.showErrorMessage;
+        let lastError: string | undefined;
+        (vscode.window as any).showErrorMessage = async (message: string) => {
+            lastError = message;
+            return undefined;
+        };
+
+        const net = await import('net');
+        const server = net.createServer();
+        await new Promise<void>(resolve => server.listen(0, resolve));
+        const port = (server.address() as any).port;
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+
+        const result = await provider['validateControlPlaneUrl'](`http://127.0.0.1:${port}/`);
+        assert.strictEqual(result, false);
+        assert.ok(lastError?.includes('Unable to reach control plane'));
+
+        (vscode.window as any).showErrorMessage = originalShowError;
+    });
+
+    test('validateControlPlaneUrl rejects invalid URLs and shows an error', async () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const originalShowError = vscode.window.showErrorMessage;
+        let lastError: string | undefined;
+        (vscode.window as any).showErrorMessage = async (message: string) => {
+            lastError = message;
+            return undefined;
+        };
+
+        const result = await provider['validateControlPlaneUrl']('not-a-url');
+        assert.strictEqual(result, false);
+        assert.ok(lastError?.includes('is not a valid URL'));
+
+        (vscode.window as any).showErrorMessage = originalShowError;
+    });
 });
 
 suite('HTTP helper tests', () => {
@@ -191,6 +230,44 @@ suite('HTTP helper tests', () => {
         );
 
         server.close();
+    });
+
+    test('httpProbe resolves on reachable server', async () => {
+        const server = http.createServer((req, res) => {
+            res.writeHead(200);
+            res.end();
+        });
+
+        await new Promise<void>(resolve => server.listen(0, resolve));
+        const port = (server.address() as any).port;
+
+        await httpProbe(`http://127.0.0.1:${port}/`);
+        server.close();
+    });
+
+    test('httpProbe resolves even on 404 responses', async () => {
+        const server = http.createServer((req, res) => {
+            res.writeHead(404);
+            res.end();
+        });
+
+        await new Promise<void>(resolve => server.listen(0, resolve));
+        const port = (server.address() as any).port;
+
+        await httpProbe(`http://127.0.0.1:${port}/`);
+        server.close();
+    });
+
+    test('httpProbe rejects on unreachable server', async () => {
+        const net = await import('net');
+        const server = net.createServer();
+        await new Promise<void>(resolve => server.listen(0, resolve));
+        const port = (server.address() as any).port;
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+
+        await assert.rejects(
+            httpProbe(`http://127.0.0.1:${port}/`),
+        );
     });
 
     test('httpPostJson sends form data and parses response', async () => {
