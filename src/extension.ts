@@ -56,4 +56,4 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() { }
 
 export type { ControlPlane, WorkspaceInfo } from './lib/types';
-export { QuickspacesTreeProvider, ControlPlaneItem, WorkspaceItem, StatusItem, httpGetJson, httpPostJson, httpRequestJson } from './lib/treeProvider';
+export { QuickspacesTreeProvider, ControlPlaneItem, WorkspaceItem, StatusItem, httpGetJson, httpPostJson, httpRequestJson, httpProbe } from './lib/treeProvider';

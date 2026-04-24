@@ -56,3 +56,25 @@ export function httpPostJson<T>(url: string, body: string, options?: { headers?:
         },
     });
 }
+
+export function httpProbe(url: string, options?: { headers?: Record<string, string> }): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const client = url.startsWith('https://') ? https : http;
+        const headers: Record<string, string> = {
+            'User-Agent': 'Quickspaces VS Code Extension',
+            ...options?.headers,
+        };
+
+        const req = client.request(url, { method: 'HEAD', headers }, res => {
+            res.on('data', () => { /* ignore response body */ });
+            res.on('end', () => resolve());
+            res.resume();
+        });
+
+        req.on('error', reject);
+        req.setTimeout(5000, () => {
+            req.destroy(new Error('Control plane reachability check timed out'));
+        });
+        req.end();
+    });
+}
