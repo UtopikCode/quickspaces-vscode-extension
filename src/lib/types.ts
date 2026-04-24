@@ -41,10 +41,15 @@ export interface WorkspaceInfo {
 }
 
 export interface CreateWorkspaceRequest {
-    repoOwner: string;
-    repoName: string;
-    repoProvider: string;
-    ref: string;
+    adapter_type: string;
+    runtime_config: Record<string, unknown>;
+    repo_owner?: string;
+    repo_name?: string;
+    ref?: string;
+}
+
+export interface UpdateWorkspaceRequest {
+    ref?: string;
     desiredState?: string | null;
     labels?: Record<string, string> | null;
     ttlPolicy?: string | null;

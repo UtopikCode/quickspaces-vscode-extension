@@ -89,6 +89,39 @@ suite('QuickspacesTreeProvider Tests', () => {
         assert.deepStrictEqual(resolved?.controlPlane, provider['controlPlanes'][0]);
     });
 
+    test('promptForExecutionProfile returns the selected profile', async () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const originalShowQuickPick = vscode.window.showQuickPick;
+        (vscode.window as any).showQuickPick = async (items: any[]) => items[1];
+
+        const selected = await provider['promptForExecutionProfile']();
+        assert.strictEqual(selected?.label, 'Medium');
+        assert.deepStrictEqual(selected?.runtime_config, { profile: 'medium' });
+
+        (vscode.window as any).showQuickPick = originalShowQuickPick;
+    });
+
+    test('buildCreateWorkspaceRequest includes selected repo, branch, and profile', () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const profile = {
+            label: 'Medium',
+            description: 'Balanced execution profile',
+            adapter_type: 'container',
+            runtime_config: { profile: 'medium' },
+        } as const;
+        const workspace = { repo_owner: 'octo', repo_name: 'hello' } as any;
+
+        const request = provider['buildCreateWorkspaceRequest'](profile, workspace, 'feature/new-ui');
+
+        assert.deepStrictEqual(request, {
+            adapter_type: 'container',
+            runtime_config: { profile: 'medium' },
+            repo_owner: 'octo',
+            repo_name: 'hello',
+            ref: 'feature/new-ui',
+        });
+    });
+
     test('ControlPlaneItem defaults to expanded state', () => {
         const cp: ControlPlane = { name: 'Test', url: 'https://example.com' };
         const cpItem = new ControlPlaneItem(cp);

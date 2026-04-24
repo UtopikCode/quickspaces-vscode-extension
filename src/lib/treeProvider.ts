@@ -1,11 +1,34 @@
 import * as vscode from 'vscode';
-import { ControlPlane, ProviderInfo, WorkspaceInfo, CreateWorkspaceRequest } from './types';
+import { ControlPlane, ProviderInfo, WorkspaceInfo, CreateWorkspaceRequest, UpdateWorkspaceRequest } from './types';
 import { ControlPlaneItem, WorkspaceItem, StatusItem } from './treeItems';
 import { DEFAULT_REPO_PROVIDERS } from './repoProviders';
 import { trimLeadingSlashes, trimTrailingSlashes } from './utils';
 import { httpGetJson, httpPostJson, httpRequestJson, httpProbe } from './http';
 
 type TreeItem = ControlPlaneItem | WorkspaceItem | StatusItem;
+
+const EXECUTION_PROFILES = [
+    {
+        label: 'Small',
+        description: 'Light execution profile',
+        adapter_type: 'container',
+        runtime_config: { profile: 'small' },
+    },
+    {
+        label: 'Medium',
+        description: 'Balanced execution profile',
+        adapter_type: 'container',
+        runtime_config: { profile: 'medium' },
+    },
+    {
+        label: 'Large',
+        description: 'High-capacity execution profile',
+        adapter_type: 'container',
+        runtime_config: { profile: 'large' },
+    },
+] as const;
+
+type ExecutionProfile = (typeof EXECUTION_PROFILES)[number];
 
 export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     private onDidChangeTreeDataEmitter = new vscode.EventEmitter<TreeItem | undefined | null | void>();
@@ -88,6 +111,37 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
 
     private async getAvailableProviders(controlPlaneOrUrl?: ControlPlane | string, token?: string): Promise<ProviderInfo[]> {
         return DEFAULT_REPO_PROVIDERS;
+    }
+
+    private async pickRepositorySource(providers: ProviderInfo[], currentProviderId?: string): Promise<ProviderInfo | undefined> {
+        if (!providers.length) {
+            return undefined;
+        }
+
+        if (currentProviderId) {
+            const existingProvider = providers.find(p => p.id === currentProviderId);
+            if (existingProvider) {
+                return existingProvider;
+            }
+        }
+
+        if (providers.length === 1) {
+            return providers[0];
+        }
+
+        const pick = await vscode.window.showQuickPick(
+            providers.map(provider => ({
+                label: provider.label,
+                description: provider.apiUrl,
+                provider,
+            } as vscode.QuickPickItem & { provider: ProviderInfo })),
+            {
+                placeHolder: 'Select a repository provider',
+                ignoreFocusOut: false,
+            },
+        );
+
+        return pick?.provider;
     }
 
     private getProviderInfo(providerId: string, cp?: ControlPlane): ProviderInfo | undefined {
@@ -438,7 +492,7 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const requestBody: Partial<CreateWorkspaceRequest> = {};
+        const requestBody: Partial<UpdateWorkspaceRequest> = {};
 
         if (action.label === 'Change branch/ref') {
             const ref = await vscode.window.showInputBox({
@@ -748,12 +802,12 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const workspaceRequest: CreateWorkspaceRequest = {
-            repoOwner: selectedWorkspace.repo_owner,
-            repoName: selectedWorkspace.repo_name,
-            repoProvider: selectedProvider?.id ?? controlPlane.provider ?? '',
-            ref: selectedRef,
-        };
+        const selectedProfile = await this.promptForExecutionProfile();
+        if (!selectedProfile) {
+            return;
+        }
+
+        const workspaceRequest = this.buildCreateWorkspaceRequest(selectedProfile, selectedWorkspace, selectedRef);
 
         const createUrl = `${trimTrailingSlashes(controlPlane.url)}/api/v1/workspaces`;
 
@@ -922,6 +976,16 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
     }
 
+    private buildCreateWorkspaceRequest(profile: ExecutionProfile, workspace: WorkspaceInfo, ref: string): CreateWorkspaceRequest {
+        return {
+            adapter_type: profile.adapter_type,
+            runtime_config: profile.runtime_config,
+            repo_owner: workspace.repo_owner,
+            repo_name: workspace.repo_name,
+            ref,
+        };
+    }
+
     private async createWorkspace(
         url: string,
         requestBody: CreateWorkspaceRequest,
@@ -951,6 +1015,21 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             }
             throw error;
         }
+    }
+
+    private async promptForExecutionProfile(): Promise<ExecutionProfile | undefined> {
+        const profilePickItems = EXECUTION_PROFILES.map(profile => ({
+            label: profile.label,
+            description: profile.description,
+            profile,
+        }));
+
+        const selected = await vscode.window.showQuickPick(profilePickItems, {
+            placeHolder: 'Select an execution profile',
+            ignoreFocusOut: false,
+        });
+
+        return selected?.profile;
     }
 
     private getProviderRepoUrl(cp: ControlPlane): string {
