@@ -28,8 +28,18 @@ export interface WorkspaceInfo {
     workspaceId?: string;
     repo_owner?: string;
     repo_name?: string;
+    repoOwner?: string;
     repoName?: string;
     ref?: string;
+    source?: {
+        type?: string;
+        config?: {
+            provider?: string;
+            owner?: string;
+            repo?: string;
+            ref?: string;
+        };
+    };
     actual_state?: string;
     actualState?: string;
     desired_state?: string;
@@ -41,11 +51,16 @@ export interface WorkspaceInfo {
 }
 
 export interface CreateWorkspaceRequest {
-    adapter_type: string;
-    runtime_config: Record<string, unknown>;
-    repo_owner?: string;
-    repo_name?: string;
-    ref?: string;
+    repoOwner: string;
+    repoName: string;
+    repoProvider: string;
+    ref: string;
+    adapterType?: string | null;
+    runtimeConfig?: Record<string, unknown> | null;
+    executionProfile?: Record<string, unknown> | null;
+    desiredState?: string | null;
+    labels?: Record<string, string> | null;
+    ttlPolicy?: string | null;
 }
 
 export interface UpdateWorkspaceRequest {

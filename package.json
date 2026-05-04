@@ -9,13 +9,7 @@
     "vscode": "^1.110.0"
   },
   "activationEvents": [
-    "onUri",
-    "onView:quickspacesView",
-    "onCommand:quickspaces.addControlPlane",
-    "onCommand:quickspaces.addWorkspace",
-    "onCommand:quickspaces.configureControlPlane",
-    "onCommand:quickspaces.configureWorkspace",
-    "onCommand:quickspaces.refresh"
+    "onUri"
   ],
   "categories": [
     "Other"
@@ -63,6 +57,16 @@
         "icon": "$(settings-gear)"
       },
       {
+        "command": "quickspaces.connectWorkspace",
+        "title": "Connect Workspace",
+        "icon": "$(link)"
+      },
+      {
+        "command": "quickspaces.deleteWorkspace",
+        "title": "Delete Workspace",
+        "icon": "$(trash)"
+      },
+      {
         "command": "quickspaces.configureWorkspace",
         "title": "Configure Workspace",
         "icon": "$(settings-gear)"
@@ -101,11 +105,6 @@
           "command": "quickspaces.configureControlPlane",
           "when": "view == quickspacesView && viewItem == controlPlane",
           "group": "inline@2"
-        },
-        {
-          "command": "quickspaces.configureWorkspace",
-          "when": "view == quickspacesView && viewItem == workspace",
-          "group": "inline@4"
         }
       ],
       "view/item/context": [
@@ -125,12 +124,20 @@
           "group": "inline@3"
         },
         {
-          "command": "quickspaces.configureWorkspace",
+          "command": "quickspaces.connectWorkspace",
           "when": "view == quickspacesView && viewItem == workspace",
-          "group": "inline@4"
+          "group": "navigation@4"
+        },
+        {
+          "command": "quickspaces.deleteWorkspace",
+          "when": "view == quickspacesView && viewItem == workspace",
+          "group": "navigation@5"
         }
       ]
     }
+  },
+  "dependencies": {
+    "@utopikcode/quickspaces-control-plane-api-client": "0.0.0-alpha.12"
   },
   "scripts": {
     "vscode:prepublish": "yarn run package",

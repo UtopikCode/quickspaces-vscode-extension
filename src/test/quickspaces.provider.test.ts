@@ -101,7 +101,7 @@ suite('QuickspacesTreeProvider Tests', () => {
         (vscode.window as any).showQuickPick = originalShowQuickPick;
     });
 
-    test('buildCreateWorkspaceRequest includes selected repo, branch, and profile', () => {
+    test('buildCreateWorkspaceRequest includes selected repo, branch, provider, and profile', () => {
         const provider = new QuickspacesTreeProvider(fakeContext);
         const profile = {
             label: 'Medium',
@@ -110,15 +110,72 @@ suite('QuickspacesTreeProvider Tests', () => {
             runtime_config: { profile: 'medium' },
         } as const;
         const workspace = { repo_owner: 'octo', repo_name: 'hello' } as any;
+        const controlPlane: ControlPlane = { name: 'Main', url: 'https://example.com', provider: 'github' };
 
-        const request = provider['buildCreateWorkspaceRequest'](profile, workspace, 'feature/new-ui');
+        const request = provider['buildCreateWorkspaceRequest'](profile, workspace, 'feature/new-ui', controlPlane);
 
         assert.deepStrictEqual(request, {
-            adapter_type: 'container',
-            runtime_config: { profile: 'medium' },
+            repoOwner: 'octo',
+            repoName: 'hello',
+            repoProvider: 'github',
+            ref: 'feature/new-ui',
+            adapterType: 'container',
+            runtimeConfig: { profile: 'medium' },
+        });
+    });
+
+    test('WorkspaceItem label uses source.config owner/repo when available', () => {
+        const workspace = {
+            source: { config: { owner: 'octo', repo: 'hello' } },
+            workspace_id: 'ws-123',
+        } as any;
+        const item = new WorkspaceItem(workspace, 'Main').getTreeItem();
+        assert.strictEqual(item.label, 'octo/hello');
+    });
+
+    test('buildWorkspacePatchRequest prefers workspace.source.config owner/repo when building patch payload', () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const workspace = {
+            source: { config: { owner: 'octo', repo: 'hello' } },
+            repo_owner: 'wrong',
+            repo_name: 'wrong',
+            ref: 'develop',
+        } as any;
+        const controlPlane: ControlPlane = { name: 'Main', url: 'https://example.com', provider: 'github' };
+
+        const requestBody = provider['buildWorkspacePatchRequest'](workspace, controlPlane, {
+            desiredState: 'started',
+        });
+
+        assert.deepStrictEqual(requestBody, {
+            desiredState: 'started',
+            repoOwner: 'octo',
+            repoName: 'hello',
+            repoProvider: 'github',
+            ref: 'develop',
+        });
+    });
+
+    test('buildWorkspacePatchRequest includes required create fields for PATCH payloads', () => {
+        const provider = new QuickspacesTreeProvider(fakeContext);
+        const workspace = {
             repo_owner: 'octo',
             repo_name: 'hello',
-            ref: 'feature/new-ui',
+            ref: 'develop',
+            labels: { env: 'dev' },
+        } as any;
+        const controlPlane: ControlPlane = { name: 'Main', url: 'https://example.com', provider: 'github' };
+
+        const requestBody = provider['buildWorkspacePatchRequest'](workspace, controlPlane, {
+            desiredState: 'started',
+        });
+
+        assert.deepStrictEqual(requestBody, {
+            desiredState: 'started',
+            repoOwner: 'octo',
+            repoName: 'hello',
+            repoProvider: 'github',
+            ref: 'develop',
         });
     });
 
