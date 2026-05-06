@@ -627,6 +627,43 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
+        const actualState = (workspace.actual_state ?? workspace.actualState)?.toString().toLowerCase();
+        const desiredState = (workspace.desired_state ?? workspace.desiredState)?.toString().toLowerCase();
+        const isRunning = actualState === 'running';
+
+        if (!isRunning && desiredState !== 'running') {
+            const controlPlane = resolved.controlPlane;
+            if (!controlPlane) {
+                vscode.window.showErrorMessage('Unable to determine the control plane for this workspace.');
+                return;
+            }
+
+            const workspaceId = workspace.workspace_id ?? workspace.workspaceId;
+            if (!workspaceId) {
+                vscode.window.showErrorMessage('Unable to update workspace state because the workspace has no workspace ID.');
+                return;
+            }
+
+            const providerToken = await this.getAccessToken(controlPlane, true);
+            if (!providerToken) {
+                vscode.window.showWarningMessage('Sign in to authenticate with the configured repository provider.');
+                return;
+            }
+
+            const apiClient = createControlPlaneApiClient(controlPlane, providerToken);
+            const patchRequest = this.buildWorkspacePatchRequest(workspace, controlPlane, { desiredState: 'running' });
+
+            try {
+                await apiClient.updateWorkspace(workspaceId, patchRequest);
+                this.workspaceCacheByControlPlaneUrl.delete(this.getControlPlaneCacheKey(controlPlane));
+                this.refresh();
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Unable to update workspace desired state.';
+                vscode.window.showErrorMessage(`Failed to start workspace: ${message}`);
+                return;
+            }
+        }
+
         try {
             await vscode.env.openExternal(vscode.Uri.parse(connectionUrl));
         } catch (error) {

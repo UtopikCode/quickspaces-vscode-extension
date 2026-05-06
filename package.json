@@ -1,5 +1,6 @@
 {
   "name": "quickspaces",
+  "type": "module",
   "displayName": "Quickspaces",
   "publisher": "UtopikCode",
   "description": "",
@@ -105,6 +106,11 @@
           "command": "quickspaces.configureControlPlane",
           "when": "view == quickspacesView && viewItem == controlPlane",
           "group": "inline@2"
+        },
+        {
+          "command": "quickspaces.connectWorkspace",
+          "when": "view == quickspacesView && viewItem == workspace",
+          "group": "inline@1"
         }
       ],
       "view/item/context": [
@@ -137,15 +143,20 @@
     }
   },
   "dependencies": {
-    "@utopikcode/quickspaces-control-plane-api-client": "0.0.0-alpha.12"
+    "@microsoft/kiota-abstractions": "^1.0.0-preview.100",
+    "@microsoft/kiota-serialization-form": "^1.0.0-preview.100",
+    "@microsoft/kiota-serialization-json": "^1.0.0-preview.100",
+    "@microsoft/kiota-serialization-multipart": "^1.0.0-preview.100",
+    "@microsoft/kiota-serialization-text": "^1.0.0-preview.100",
+    "@utopikcode/quickspaces-control-plane-api-client": "^0.0.0-alpha.12"
   },
   "scripts": {
     "vscode:prepublish": "yarn run package",
-    "compile": "yarn run check-types && yarn run lint && node esbuild.js",
+    "compile": "yarn run check-types && yarn run lint && node esbuild.cjs",
     "watch": "npm-run-all -p watch:*",
-    "watch:esbuild": "node esbuild.js --watch",
+    "watch:esbuild": "node esbuild.cjs --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "yarn run check-types && yarn run lint && node esbuild.js --production",
+    "package": "yarn run check-types && yarn run lint && node esbuild.cjs --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "yarn run compile-tests && yarn run compile && yarn run lint",
@@ -155,15 +166,15 @@
     "test:headless": "xvfb-run -a yarn run test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.110.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.56.1",
-    "eslint": "^9.39.3",
+    "@types/vscode": "^1.110.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.27.3",
+    "eslint": "^9.39.3",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.56.1"
   }
 }

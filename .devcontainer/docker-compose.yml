@@ -38,6 +38,7 @@ services:
       - ..:/workspaces/quickspaces-vscode-extension:cached
     working_dir: /workspaces/quickspaces-vscode-extension
     command: sleep infinity
+    network_mode: host
     depends_on:
       - control-plane
       - runner

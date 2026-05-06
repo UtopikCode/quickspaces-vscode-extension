@@ -1,16 +1,13 @@
 {
   "name": "VS Code Extension (TypeScript)",
-  // "image": "mcr.microsoft.com/devcontainers/typescript-node:1-20-bullseye",
-  // "runArgs": ["--network=host"],
-  "dockerComposeFile": "docker-compose.yml",
-  "service": "devcontainer",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:1-20-bullseye",
+  "runArgs": [
+    "--env-file", ".devcontainer/devcontainer.env",
+    "--network=host"
+  ],
+  // "dockerComposeFile": "docker-compose.yml",
+  // "service": "devcontainer",
   "workspaceFolder": "/workspaces/quickspaces-vscode-extension",
-  "portsAttributes": {
-    "5000": {
-      "label": "Application",
-      "onAutoForward": "notify"
-    }
-  },
   "customizations": {
     "vscode": {
       "extensions": [
