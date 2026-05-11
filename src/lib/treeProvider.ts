@@ -2,9 +2,8 @@ import * as vscode from 'vscode';
 import { ControlPlane, ProviderInfo, WorkspaceInfo, CreateWorkspaceRequest, UpdateWorkspaceRequest } from './types';
 import { ControlPlaneItem, WorkspaceItem, StatusItem } from './treeItems';
 import { DEFAULT_REPO_PROVIDERS } from './repoProviders';
-import { trimLeadingSlashes, trimTrailingSlashes, getWorkspaceRepo } from './utils';
-import { httpGetJson, httpRequestJson, httpProbe } from './http';
-import { createControlPlaneApiClient } from './controlPlaneApi';
+import { trimLeadingSlashes, trimTrailingSlashes } from './utils';
+import { httpGetJson, httpPostJson, httpRequestJson } from './http';
 
 type TreeItem = ControlPlaneItem | WorkspaceItem | StatusItem;
 
@@ -90,60 +89,104 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         return trimTrailingSlashes(cp.url);
     }
 
-    private async validateControlPlaneUrl(url: string): Promise<boolean> {
-        const normalizedUrl = url.trim();
-        try {
-            new URL(normalizedUrl);
-        } catch {
-            await vscode.window.showErrorMessage(`Control plane URL "${url}" is not a valid URL`);
-            return false;
-        }
-
-        try {
-            const apiClient = createControlPlaneApiClient({ name: '', url: normalizedUrl });
-            await apiClient.probe();
-            return true;
-        } catch (error) {
-            await vscode.window.showErrorMessage(
-                `Unable to reach control plane at "${normalizedUrl}": ${error instanceof Error ? error.message : String(error)}`,
-            );
-            return false;
-        }
-    }
-
     private async getAvailableProviders(controlPlaneOrUrl?: ControlPlane | string, token?: string): Promise<ProviderInfo[]> {
+        const controlPlaneUrl = typeof controlPlaneOrUrl === 'string'
+            ? controlPlaneOrUrl
+            : controlPlaneOrUrl?.url;
+
+        if (controlPlaneUrl) {
+            const normalizedUrl = trimTrailingSlashes(controlPlaneUrl);
+            const cached = this.providerCacheByControlPlaneUrl.get(normalizedUrl);
+            if (cached) {
+                return cached;
+            }
+
+            const providers = await this.fetchProvidersFromControlPlane(normalizedUrl, token);
+            const mergedProviders = providers.length
+                ? this.mergeProviderLists(DEFAULT_REPO_PROVIDERS, providers)
+                : DEFAULT_REPO_PROVIDERS;
+
+            this.providerCacheByControlPlaneUrl.set(normalizedUrl, mergedProviders);
+            return mergedProviders;
+        }
+
         return DEFAULT_REPO_PROVIDERS;
     }
 
-    private async pickRepositorySource(providers: ProviderInfo[], currentProviderId?: string): Promise<ProviderInfo | undefined> {
-        if (!providers.length) {
-            return undefined;
-        }
+    private async fetchProvidersFromControlPlane(controlPlaneUrl: string, token?: string): Promise<ProviderInfo[]> {
+        const candidatePaths = [
+            '/api/v1/repo-providers',
+            '/api/v1/providers',
+        ];
 
-        if (currentProviderId) {
-            const existingProvider = providers.find(p => p.id === currentProviderId);
-            if (existingProvider) {
-                return existingProvider;
+        for (const path of candidatePaths) {
+            const requestUrl = `${trimTrailingSlashes(controlPlaneUrl)}${path}`;
+            this.logDebug(`Fetching providers from ${requestUrl}`);
+            try {
+                const response = await httpGetJson<unknown>(requestUrl, token ? {
+                    headers: { Authorization: `Bearer ${token}` },
+                } : undefined);
+                const providers = this.normalizeProviderList(response);
+                this.logDebug(`Provider response length: ${Array.isArray(response) ? response.length : 0}`);
+                if (providers.length) {
+                    this.logDebug(`Found ${providers.length} providers from ${requestUrl}`);
+                    return providers;
+                }
+                this.logDebug(`No providers found at ${requestUrl}`);
+            } catch (error) {
+                this.logError(`Unable to fetch providers from ${requestUrl}: ${error instanceof Error ? error.message : String(error)}`);
+                // try the next endpoint
             }
         }
 
-        if (providers.length === 1) {
-            return providers[0];
+        return [];
+    }
+
+    private normalizeProviderList(response: unknown): ProviderInfo[] {
+        if (!Array.isArray(response)) {
+            return [];
         }
 
-        const pick = await vscode.window.showQuickPick(
-            providers.map(provider => ({
-                label: provider.label,
-                description: provider.apiUrl,
-                provider,
-            } as vscode.QuickPickItem & { provider: ProviderInfo })),
-            {
-                placeHolder: 'Select a repository provider',
-                ignoreFocusOut: false,
-            },
-        );
+        return response
+            .map<ProviderInfo | undefined>(item => {
+                if (!item || typeof item !== 'object') {
+                    return undefined;
+                }
 
-        return pick?.provider;
+                const provider = item as any;
+                if (typeof provider.slug !== 'string' || typeof provider.name !== 'string') {
+                    return undefined;
+                }
+
+                const scope = Array.isArray(provider.scope)
+                    ? provider.scope.filter((value: unknown): value is string => typeof value === 'string').join(' ')
+                    : typeof provider.scope === 'string'
+                        ? provider.scope
+                        : undefined;
+
+                return {
+                    id: provider.slug.toLowerCase(),
+                    label: provider.name,
+                    apiUrl: typeof provider.apiUrl === 'string' ? provider.apiUrl : undefined,
+                    repositoryUrlTemplate: typeof provider.repositoryUrlTemplate === 'string'
+                        ? provider.repositoryUrlTemplate
+                        : undefined,
+                    authorizationUrl: typeof provider.authorizationUrl === 'string'
+                        ? provider.authorizationUrl
+                        : undefined,
+                    tokenUrl: typeof provider.tokenUrl === 'string' ? provider.tokenUrl : undefined,
+                    scope,
+                    repoListUrl: typeof provider.repoListUrl === 'string' ? provider.repoListUrl : undefined,
+                    repoListPath: typeof provider.repoListPath === 'string' ? provider.repoListPath : undefined,
+                    branchListUrl: typeof provider.branchListUrl === 'string' ? provider.branchListUrl : undefined,
+                    branchListPath: typeof provider.branchListPath === 'string' ? provider.branchListPath : undefined,
+                    branchCreateUrl: typeof provider.branchCreateUrl === 'string' ? provider.branchCreateUrl : undefined,
+                    branchCreatePath: typeof provider.branchCreatePath === 'string' ? provider.branchCreatePath : undefined,
+                    branchCreateBodyTemplate: typeof provider.branchCreateBodyTemplate === 'string' ? provider.branchCreateBodyTemplate : undefined,
+                    branchCreateMethod: typeof provider.branchCreateMethod === 'string' ? provider.branchCreateMethod : undefined,
+                };
+            })
+            .filter((provider): provider is ProviderInfo => provider !== undefined);
     }
 
     private getProviderInfo(providerId: string, cp?: ControlPlane): ProviderInfo | undefined {
@@ -165,18 +208,22 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
                 }
             }
 
-            return DEFAULT_REPO_PROVIDERS.find(provider => provider.id === normalizedId);
+        return DEFAULT_REPO_PROVIDERS.find(provider => provider.id === providerId);
+    }
+
+    private mergeProviderLists(defaultProviders: ProviderInfo[], remoteProviders: ProviderInfo[]): ProviderInfo[] {
+        const providerMap = new Map<string, ProviderInfo>();
+
+        for (const provider of defaultProviders) {
+            providerMap.set(provider.id, provider);
         }
 
-        if (cp?.providerApiUrl) {
-            const apiUrl = trimTrailingSlashes(cp.providerApiUrl);
-            const inferred = DEFAULT_REPO_PROVIDERS.find(provider => trimTrailingSlashes(provider.apiUrl ?? '') === apiUrl);
-            if (inferred) {
-                return inferred;
-            }
+        for (const provider of remoteProviders) {
+            const existing = providerMap.get(provider.id);
+            providerMap.set(provider.id, existing ? { ...existing, ...provider } : provider);
         }
 
-        return DEFAULT_REPO_PROVIDERS[0];
+        return Array.from(providerMap.values());
     }
 
     private hasBranchCreateConfig(provider?: ProviderInfo): boolean {
@@ -837,16 +884,12 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const currentUser = await this.getProviderUserInfo(controlPlane, providerToken);
-        const quickPickItems = repos.map(repo => {
-            const repoInfo = getWorkspaceRepo(repo);
-            return {
-                label: repoInfo ? `${repoInfo.owner}/${repoInfo.repo}` : repo.workspace_id ?? repo.ref ?? 'Repository',
-                description: repo.actual_state || repo.desired_state || '',
-                detail: repo.connection_url || repo.ref || '',
-                workspace: repo,
-            } as vscode.QuickPickItem & { workspace: WorkspaceInfo };
-        });
+        const quickPickItems = repos.map(repo => ({
+            label: repo.repo_owner && repo.repo_name ? `${repo.repo_owner}/${repo.repo_name}` : repo.workspace_id ?? repo.ref ?? 'Repository',
+            description: repo.actual_state || repo.desired_state || '',
+            detail: repo.connection_url || repo.ref || '',
+            workspace: repo,
+        } as vscode.QuickPickItem & { workspace: WorkspaceInfo }));
 
         const ownedItems = quickPickItems.filter(item => this.isRepoOwnedByCurrentUser(item.workspace, currentUser));
 
@@ -1046,6 +1089,44 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
 
         const owner = repoInfo.owner.toLowerCase();
+        return [currentUser.login, currentUser.username].some(identity =>
+            typeof identity === 'string' && identity.toLowerCase() === owner,
+        );
+    }
+
+    private async getProviderUserInfo(controlPlane: ControlPlane, token: string): Promise<{ login?: string; username?: string } | undefined> {
+        const provider = this.getProviderInfo(controlPlane.provider ?? '', controlPlane);
+        if (!provider?.apiUrl) {
+            return undefined;
+        }
+
+        const normalized = provider.apiUrl.replace(/\/+$|\s+/g, '');
+        const userUrl = `${normalized}/user`;
+
+        try {
+            const userData = await httpGetJson<unknown>(userUrl, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (userData && typeof userData === 'object') {
+                const profile = userData as any;
+                return {
+                    login: typeof profile.login === 'string' ? profile.login : undefined,
+                    username: typeof profile.username === 'string' ? profile.username : undefined,
+                };
+            }
+        } catch (error) {
+            this.logError(`Failed to fetch provider user info from ${userUrl}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
+        return undefined;
+    }
+
+    private isRepoOwnedByCurrentUser(repo: WorkspaceInfo, currentUser: { login?: string; username?: string } | undefined): boolean {
+        if (!currentUser || !repo.repo_owner) {
+            return false;
+        }
+
+        const owner = repo.repo_owner.toLowerCase();
         return [currentUser.login, currentUser.username].some(identity =>
             typeof identity === 'string' && identity.toLowerCase() === owner,
         );
@@ -1420,5 +1501,5 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
     }
 }
 
-export { httpGetJson, httpPostJson, httpRequestJson, httpProbe } from './http';
+export { httpGetJson, httpPostJson, httpRequestJson };
 export { ControlPlaneItem, WorkspaceItem, StatusItem } from './treeItems';
