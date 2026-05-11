@@ -46,6 +46,18 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('quickspaces.connectWorkspace', async (workspaceOrItem: WorkspaceInfo | WorkspaceItem | vscode.TreeItem | undefined) => {
+            await provider.connectWorkspace(workspaceOrItem);
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('quickspaces.deleteWorkspace', async (workspaceOrItem: WorkspaceInfo | WorkspaceItem | vscode.TreeItem | undefined) => {
+            await provider.deleteWorkspace(workspaceOrItem);
+        }),
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('quickspaces.refresh', () => {
             provider.refresh();
             vscode.window.showInformationMessage('Quickspaces refreshed');

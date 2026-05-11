@@ -1,11 +1,34 @@
 import * as vscode from 'vscode';
-import { ControlPlane, ProviderInfo, WorkspaceInfo, CreateWorkspaceRequest } from './types';
+import { ControlPlane, ProviderInfo, WorkspaceInfo, CreateWorkspaceRequest, UpdateWorkspaceRequest } from './types';
 import { ControlPlaneItem, WorkspaceItem, StatusItem } from './treeItems';
 import { DEFAULT_REPO_PROVIDERS } from './repoProviders';
 import { trimLeadingSlashes, trimTrailingSlashes } from './utils';
-import { httpGetJson, httpPostJson, httpRequestJson, httpProbe } from './http';
+import { httpGetJson, httpPostJson, httpRequestJson } from './http';
 
 type TreeItem = ControlPlaneItem | WorkspaceItem | StatusItem;
+
+const EXECUTION_PROFILES = [
+    {
+        label: 'Small',
+        description: 'Light execution profile',
+        adapter_type: 'container',
+        runtime_config: { profile: 'small' },
+    },
+    {
+        label: 'Medium',
+        description: 'Balanced execution profile',
+        adapter_type: 'container',
+        runtime_config: { profile: 'medium' },
+    },
+    {
+        label: 'Large',
+        description: 'High-capacity execution profile',
+        adapter_type: 'container',
+        runtime_config: { profile: 'large' },
+    },
+] as const;
+
+type ExecutionProfile = (typeof EXECUTION_PROFILES)[number];
 
 export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     private onDidChangeTreeDataEmitter = new vscode.EventEmitter<TreeItem | undefined | null | void>();
@@ -66,52 +89,141 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         return trimTrailingSlashes(cp.url);
     }
 
-    private async validateControlPlaneUrl(url: string): Promise<boolean> {
-        const normalizedUrl = url.trim();
-        try {
-            new URL(normalizedUrl);
-        } catch {
-            await vscode.window.showErrorMessage(`Control plane URL "${url}" is not a valid URL`);
-            return false;
-        }
-
-        try {
-            await httpProbe(normalizedUrl);
-            return true;
-        } catch (error) {
-            await vscode.window.showErrorMessage(
-                `Unable to reach control plane at "${normalizedUrl}": ${error instanceof Error ? error.message : String(error)}`,
-            );
-            return false;
-        }
-    }
-
     private async getAvailableProviders(controlPlaneOrUrl?: ControlPlane | string, token?: string): Promise<ProviderInfo[]> {
+        const controlPlaneUrl = typeof controlPlaneOrUrl === 'string'
+            ? controlPlaneOrUrl
+            : controlPlaneOrUrl?.url;
+
+        if (controlPlaneUrl) {
+            const normalizedUrl = trimTrailingSlashes(controlPlaneUrl);
+            const cached = this.providerCacheByControlPlaneUrl.get(normalizedUrl);
+            if (cached) {
+                return cached;
+            }
+
+            const providers = await this.fetchProvidersFromControlPlane(normalizedUrl, token);
+            const mergedProviders = providers.length
+                ? this.mergeProviderLists(DEFAULT_REPO_PROVIDERS, providers)
+                : DEFAULT_REPO_PROVIDERS;
+
+            this.providerCacheByControlPlaneUrl.set(normalizedUrl, mergedProviders);
+            return mergedProviders;
+        }
+
         return DEFAULT_REPO_PROVIDERS;
     }
 
+    private async fetchProvidersFromControlPlane(controlPlaneUrl: string, token?: string): Promise<ProviderInfo[]> {
+        const candidatePaths = [
+            '/api/v1/repo-providers',
+            '/api/v1/providers',
+        ];
+
+        for (const path of candidatePaths) {
+            const requestUrl = `${trimTrailingSlashes(controlPlaneUrl)}${path}`;
+            this.logDebug(`Fetching providers from ${requestUrl}`);
+            try {
+                const response = await httpGetJson<unknown>(requestUrl, token ? {
+                    headers: { Authorization: `Bearer ${token}` },
+                } : undefined);
+                const providers = this.normalizeProviderList(response);
+                this.logDebug(`Provider response length: ${Array.isArray(response) ? response.length : 0}`);
+                if (providers.length) {
+                    this.logDebug(`Found ${providers.length} providers from ${requestUrl}`);
+                    return providers;
+                }
+                this.logDebug(`No providers found at ${requestUrl}`);
+            } catch (error) {
+                this.logError(`Unable to fetch providers from ${requestUrl}: ${error instanceof Error ? error.message : String(error)}`);
+                // try the next endpoint
+            }
+        }
+
+        return [];
+    }
+
+    private normalizeProviderList(response: unknown): ProviderInfo[] {
+        if (!Array.isArray(response)) {
+            return [];
+        }
+
+        return response
+            .map<ProviderInfo | undefined>(item => {
+                if (!item || typeof item !== 'object') {
+                    return undefined;
+                }
+
+                const provider = item as any;
+                if (typeof provider.slug !== 'string' || typeof provider.name !== 'string') {
+                    return undefined;
+                }
+
+                const scope = Array.isArray(provider.scope)
+                    ? provider.scope.filter((value: unknown): value is string => typeof value === 'string').join(' ')
+                    : typeof provider.scope === 'string'
+                        ? provider.scope
+                        : undefined;
+
+                return {
+                    id: provider.slug.toLowerCase(),
+                    label: provider.name,
+                    apiUrl: typeof provider.apiUrl === 'string' ? provider.apiUrl : undefined,
+                    repositoryUrlTemplate: typeof provider.repositoryUrlTemplate === 'string'
+                        ? provider.repositoryUrlTemplate
+                        : undefined,
+                    authorizationUrl: typeof provider.authorizationUrl === 'string'
+                        ? provider.authorizationUrl
+                        : undefined,
+                    tokenUrl: typeof provider.tokenUrl === 'string' ? provider.tokenUrl : undefined,
+                    scope,
+                    repoListUrl: typeof provider.repoListUrl === 'string' ? provider.repoListUrl : undefined,
+                    repoListPath: typeof provider.repoListPath === 'string' ? provider.repoListPath : undefined,
+                    branchListUrl: typeof provider.branchListUrl === 'string' ? provider.branchListUrl : undefined,
+                    branchListPath: typeof provider.branchListPath === 'string' ? provider.branchListPath : undefined,
+                    branchCreateUrl: typeof provider.branchCreateUrl === 'string' ? provider.branchCreateUrl : undefined,
+                    branchCreatePath: typeof provider.branchCreatePath === 'string' ? provider.branchCreatePath : undefined,
+                    branchCreateBodyTemplate: typeof provider.branchCreateBodyTemplate === 'string' ? provider.branchCreateBodyTemplate : undefined,
+                    branchCreateMethod: typeof provider.branchCreateMethod === 'string' ? provider.branchCreateMethod : undefined,
+                };
+            })
+            .filter((provider): provider is ProviderInfo => provider !== undefined);
+    }
+
     private getProviderInfo(providerId: string, cp?: ControlPlane): ProviderInfo | undefined {
-        if (!providerId) {
-            return undefined;
-        }
-
-        if (cp?.url) {
-            const normalizedUrl = trimTrailingSlashes(cp.url);
-            const providers = this.providerCacheByControlPlaneUrl.get(normalizedUrl);
-            const match = providers?.find(p => p.id === providerId);
-            if (match) {
-                return match;
+        const normalizedId = providerId?.toLowerCase();
+        if (normalizedId) {
+            if (cp?.url) {
+                const normalizedUrl = trimTrailingSlashes(cp.url);
+                const providers = this.providerCacheByControlPlaneUrl.get(normalizedUrl);
+                const match = providers?.find(p => p.id === normalizedId);
+                if (match) {
+                    return match;
+                }
             }
-        }
 
-        for (const providers of this.providerCacheByControlPlaneUrl.values()) {
-            const match = providers.find(p => p.id === providerId);
-            if (match) {
-                return match;
+            for (const providers of this.providerCacheByControlPlaneUrl.values()) {
+                const match = providers.find(p => p.id === normalizedId);
+                if (match) {
+                    return match;
+                }
             }
-        }
 
         return DEFAULT_REPO_PROVIDERS.find(provider => provider.id === providerId);
+    }
+
+    private mergeProviderLists(defaultProviders: ProviderInfo[], remoteProviders: ProviderInfo[]): ProviderInfo[] {
+        const providerMap = new Map<string, ProviderInfo>();
+
+        for (const provider of defaultProviders) {
+            providerMap.set(provider.id, provider);
+        }
+
+        for (const provider of remoteProviders) {
+            const existing = providerMap.get(provider.id);
+            providerMap.set(provider.id, existing ? { ...existing, ...provider } : provider);
+        }
+
+        return Array.from(providerMap.values());
     }
 
     private hasBranchCreateConfig(provider?: ProviderInfo): boolean {
@@ -193,14 +305,17 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         newBranch?: string,
         sourceBranch?: string,
     ): Record<string, string | undefined> {
-        const repoPath = workspace.repo_owner && workspace.repo_name ? `${workspace.repo_owner}/${workspace.repo_name}` : undefined;
+        const repoInfo = getWorkspaceRepo(workspace);
+        const repoOwner = repoInfo?.owner;
+        const repoName = repoInfo?.repo;
+        const repoPath = repoOwner && repoName ? `${repoOwner}/${repoName}` : undefined;
         return {
             providerId: provider.id,
             provider: provider.id,
-            repo_owner: workspace.repo_owner,
-            repo_name: workspace.repo_name,
-            repoOwner: workspace.repo_owner,
-            repoName: workspace.repo_name,
+            repo_owner: repoOwner,
+            repo_name: repoName,
+            repoOwner,
+            repoName,
             repo_path: repoPath,
             repoPath: repoPath,
             repo_path_escaped: repoPath ? encodeURIComponent(repoPath) : undefined,
@@ -379,7 +494,8 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const { workspace, controlPlane } = resolved;
+        const workspace = this.normalizeWorkspace(resolved.workspace);
+        const { controlPlane } = resolved;
         if (!controlPlane) {
             vscode.window.showErrorMessage('Unable to determine the control plane for this workspace');
             return;
@@ -421,13 +537,9 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
                 return;
             }
 
-            const deleteUrl = `${trimTrailingSlashes(controlPlane.url)}/api/v1/workspaces/${workspaceId}`;
+            const apiClient = createControlPlaneApiClient(controlPlane, providerToken);
             try {
-                await httpRequestJson<void>(deleteUrl, 'DELETE', undefined, {
-                    headers: {
-                        Authorization: `Bearer ${providerToken}`,
-                    },
-                });
+                await apiClient.deleteWorkspace(workspaceId);
                 this.workspaceCacheByControlPlaneUrl.delete(this.getControlPlaneCacheKey(controlPlane));
                 this.refresh();
                 vscode.window.showInformationMessage(`Workspace ${workspaceId} deleted successfully`);
@@ -438,13 +550,33 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const requestBody: Partial<CreateWorkspaceRequest> = {};
+        const requestBody: Partial<UpdateWorkspaceRequest> = {};
 
         if (action.label === 'Change branch/ref') {
-            const ref = await vscode.window.showInputBox({
-                prompt: 'Enter branch, tag, or commit reference for the workspace',
-                value: workspace.ref || 'main',
-            });
+            let ref: string | undefined;
+            const providerId = controlPlane.provider ?? workspace.source?.config?.provider;
+            const provider = this.getProviderInfo(providerId ?? '', controlPlane);
+            const branchNames = await this.listRepoBranches(controlPlane, workspace, providerToken);
+            if (branchNames.length > 0) {
+                const branchPick = await vscode.window.showQuickPick(
+                    branchNames.map(branch => ({ label: branch })),
+                    {
+                        placeHolder: 'Select the branch, tag, or commit reference for the workspace',
+                        ignoreFocusOut: false,
+                    },
+                );
+                if (branchPick) {
+                    ref = branchPick.label;
+                }
+            }
+
+            if (!ref) {
+                ref = await vscode.window.showInputBox({
+                    prompt: 'Enter branch, tag, or commit reference for the workspace',
+                    value: workspace.ref || 'main',
+                });
+            }
+
             if (!ref) {
                 return;
             }
@@ -514,15 +646,11 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const url = `${trimTrailingSlashes(controlPlane.url)}/api/v1/workspaces/${workspaceId}`;
+        const updateRequestBody = this.buildWorkspacePatchRequest(workspace, controlPlane, requestBody);
+        const apiClient = createControlPlaneApiClient(controlPlane, providerToken);
 
         try {
-            await httpRequestJson<void>(url, 'PATCH', JSON.stringify(requestBody), {
-                headers: {
-                    Authorization: `Bearer ${providerToken}`,
-                    'Content-Type': 'application/json',
-                },
-            });
+            await apiClient.updateWorkspace(workspaceId, updateRequestBody);
             this.workspaceCacheByControlPlaneUrl.delete(this.getControlPlaneCacheKey(controlPlane));
             this.refresh();
             vscode.window.showInformationMessage(`Workspace ${workspaceId} configured successfully`);
@@ -530,6 +658,127 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             const message = error instanceof Error ? error.message : 'Unable to configure workspace.';
             vscode.window.showErrorMessage(`Failed to configure workspace: ${message}`);
         }
+    }
+
+    async connectWorkspace(workspaceOrItem: WorkspaceInfo | WorkspaceItem | vscode.TreeItem | undefined): Promise<void> {
+        const resolved = this.resolveWorkspace(workspaceOrItem);
+        if (!resolved) {
+            vscode.window.showErrorMessage('Unable to determine the selected workspace.');
+            return;
+        }
+
+        const workspace = this.normalizeWorkspace(resolved.workspace);
+        const connectionUrl = workspace.connection_url ?? workspace.connectionUrl;
+        if (!connectionUrl) {
+            vscode.window.showErrorMessage('Unable to connect to the workspace because it has no connection URL.');
+            return;
+        }
+
+        const actualState = (workspace.actual_state ?? workspace.actualState)?.toString().toLowerCase();
+        const desiredState = (workspace.desired_state ?? workspace.desiredState)?.toString().toLowerCase();
+        const isRunning = actualState === 'running';
+
+        if (!isRunning && desiredState !== 'running') {
+            const controlPlane = resolved.controlPlane;
+            if (!controlPlane) {
+                vscode.window.showErrorMessage('Unable to determine the control plane for this workspace.');
+                return;
+            }
+
+            const workspaceId = workspace.workspace_id ?? workspace.workspaceId;
+            if (!workspaceId) {
+                vscode.window.showErrorMessage('Unable to update workspace state because the workspace has no workspace ID.');
+                return;
+            }
+
+            const providerToken = await this.getAccessToken(controlPlane, true);
+            if (!providerToken) {
+                vscode.window.showWarningMessage('Sign in to authenticate with the configured repository provider.');
+                return;
+            }
+
+            const apiClient = createControlPlaneApiClient(controlPlane, providerToken);
+            const patchRequest = this.buildWorkspacePatchRequest(workspace, controlPlane, { desiredState: 'running' });
+
+            try {
+                await apiClient.updateWorkspace(workspaceId, patchRequest);
+                this.workspaceCacheByControlPlaneUrl.delete(this.getControlPlaneCacheKey(controlPlane));
+                this.refresh();
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Unable to update workspace desired state.';
+                vscode.window.showErrorMessage(`Failed to start workspace: ${message}`);
+                return;
+            }
+        }
+
+        try {
+            await vscode.env.openExternal(vscode.Uri.parse(connectionUrl));
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unable to open the workspace connection URL.';
+            vscode.window.showErrorMessage(`Failed to connect to workspace: ${message}`);
+        }
+    }
+
+    async deleteWorkspace(workspaceOrItem: WorkspaceInfo | WorkspaceItem | vscode.TreeItem | undefined): Promise<void> {
+        const resolved = this.resolveWorkspace(workspaceOrItem);
+        if (!resolved) {
+            vscode.window.showErrorMessage('Unable to determine the selected workspace.');
+            return;
+        }
+
+        const workspace = this.normalizeWorkspace(resolved.workspace);
+        const { controlPlane } = resolved;
+        if (!controlPlane) {
+            vscode.window.showErrorMessage('Unable to determine the control plane for this workspace.');
+            return;
+        }
+
+        const workspaceId = workspace.workspace_id ?? workspace.workspaceId;
+        if (!workspaceId) {
+            vscode.window.showErrorMessage('Selected workspace cannot be deleted because it has no workspace ID.');
+            return;
+        }
+
+        const providerToken = await this.getAccessToken(controlPlane, true);
+        if (!providerToken) {
+            vscode.window.showWarningMessage('Sign in to authenticate with the configured repository provider.');
+            return;
+        }
+
+        const confirm = await vscode.window.showWarningMessage(
+            `Delete workspace ${workspaceId}? This action cannot be undone.`,
+            { modal: true },
+            'Delete',
+        );
+        if (confirm !== 'Delete') {
+            return;
+        }
+
+        const apiClient = createControlPlaneApiClient(controlPlane, providerToken);
+        try {
+            await apiClient.deleteWorkspace(workspaceId);
+            this.workspaceCacheByControlPlaneUrl.delete(this.getControlPlaneCacheKey(controlPlane));
+            this.refresh();
+            vscode.window.showInformationMessage(`Workspace ${workspaceId} deleted successfully`);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unable to delete workspace.';
+            vscode.window.showErrorMessage(`Failed to delete workspace: ${message}`);
+        }
+    }
+
+    private buildWorkspacePatchRequest(
+        workspace: WorkspaceInfo,
+        controlPlane: ControlPlane,
+        requestBody: Partial<UpdateWorkspaceRequest>,
+    ): Record<string, unknown> {
+        const repoInfo = getWorkspaceRepo(workspace);
+        return {
+            ...requestBody,
+            repoOwner: repoInfo?.owner ?? '',
+            repoName: repoInfo?.repo ?? '',
+            repoProvider: workspace.source?.config?.provider ?? controlPlane.provider ?? 'github',
+            ref: requestBody.ref ?? workspace.ref ?? workspace.source?.config?.ref ?? 'main',
+        };
     }
 
     getTreeItem(element: TreeItem): vscode.TreeItem {
@@ -635,7 +884,6 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const currentUser = await this.getProviderUserInfo(controlPlane, providerToken);
         const quickPickItems = repos.map(repo => ({
             label: repo.repo_owner && repo.repo_name ? `${repo.repo_owner}/${repo.repo_name}` : repo.workspace_id ?? repo.ref ?? 'Repository',
             description: repo.actual_state || repo.desired_state || '',
@@ -678,7 +926,8 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
 
         const selectedWorkspace = selectedRepo.workspace;
-        if (!selectedWorkspace.repo_owner || !selectedWorkspace.repo_name) {
+        const selectedRepoInfo = getWorkspaceRepo(selectedWorkspace);
+        if (!selectedRepoInfo) {
             vscode.window.showErrorMessage('Selected repository does not expose owner/name metadata.');
             return;
         }
@@ -748,27 +997,28 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return;
         }
 
-        const workspaceRequest: CreateWorkspaceRequest = {
-            repoOwner: selectedWorkspace.repo_owner,
-            repoName: selectedWorkspace.repo_name,
-            repoProvider: selectedProvider?.id ?? controlPlane.provider ?? '',
-            ref: selectedRef,
-        };
+        const selectedProfile = await this.promptForExecutionProfile();
+        if (!selectedProfile) {
+            return;
+        }
 
-        const createUrl = `${trimTrailingSlashes(controlPlane.url)}/api/v1/workspaces`;
+        const workspaceRequest = this.buildCreateWorkspaceRequest(selectedProfile, selectedWorkspace, selectedRef, controlPlane);
+
+        const apiClient = createControlPlaneApiClient(controlPlane, providerToken);
 
         try {
-            await this.createWorkspace(createUrl, workspaceRequest, controlPlane, providerToken);
+            await apiClient.createWorkspace(workspaceRequest);
             this.workspaceCacheByControlPlaneUrl.delete(this.getControlPlaneCacheKey(controlPlane));
             this.refresh();
-            vscode.window.showInformationMessage(`Workspace created for ${selectedWorkspace.repo_owner}/${selectedWorkspace.repo_name}`);
+            const selectedRepoInfo = getWorkspaceRepo(selectedWorkspace);
+            vscode.window.showInformationMessage(`Workspace created for ${selectedRepoInfo?.owner}/${selectedRepoInfo?.repo}`);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unable to create workspace.';
             vscode.window.showErrorMessage(`Failed to create workspace: ${message}`);
         }
     }
 
-    private async listRepos(controlPlane: ControlPlane, token: string, allowRetry = true): Promise<WorkspaceInfo[]> {
+    private async listRepos(controlPlane: ControlPlane, token: string): Promise<WorkspaceInfo[]> {
         const repoUrl = this.getProviderRepoUrl(controlPlane);
         if (!repoUrl) {
             vscode.window.showErrorMessage('Repository provider is missing repoListUrl or repoListPath configuration.');
@@ -788,12 +1038,6 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             this.logDebug(`No repositories found at ${repoUrl}; falling back to control plane workspace list`);
         } catch (error) {
             this.logError(`Failed to list repos from ${repoUrl}: ${error instanceof Error ? error.message : String(error)}`);
-            if (allowRetry && error instanceof Error && /HTTP\s+401/i.test(error.message)) {
-                const refreshedToken = await this.getAccessToken(controlPlane, true);
-                if (refreshedToken && refreshedToken !== token) {
-                    return await this.listRepos(controlPlane, refreshedToken, false);
-                }
-            }
         }
 
         const fallbackUrl = `${trimTrailingSlashes(controlPlane.url)}/api/v1/workspaces`;
@@ -807,14 +1051,47 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return Array.isArray(workspaces) ? workspaces : [];
         } catch (error) {
             this.logError(`Failed fallback workspace list from ${fallbackUrl}: ${error instanceof Error ? error.message : String(error)}`);
-            if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
-                const refreshedToken = await this.getAccessToken(controlPlane, true);
-                if (refreshedToken && refreshedToken !== token) {
-                    return await this.listRepos(controlPlane, refreshedToken, false);
-                }
-            }
             return [];
         }
+    }
+
+    private async getProviderUserInfo(controlPlane: ControlPlane, token: string): Promise<{ login?: string; username?: string } | undefined> {
+        const provider = this.getProviderInfo(controlPlane.provider ?? '', controlPlane);
+        if (!provider?.apiUrl) {
+            return undefined;
+        }
+
+        const normalized = provider.apiUrl.replace(/\/+$|\s+/g, '');
+        const userUrl = `${normalized}/user`;
+
+        try {
+            const userData = await httpGetJson<unknown>(userUrl, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (userData && typeof userData === 'object') {
+                const profile = userData as any;
+                return {
+                    login: typeof profile.login === 'string' ? profile.login : undefined,
+                    username: typeof profile.username === 'string' ? profile.username : undefined,
+                };
+            }
+        } catch (error) {
+            this.logError(`Failed to fetch provider user info from ${userUrl}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
+        return undefined;
+    }
+
+    private isRepoOwnedByCurrentUser(repo: WorkspaceInfo, currentUser: { login?: string; username?: string } | undefined): boolean {
+        const repoInfo = getWorkspaceRepo(repo);
+        if (!currentUser || !repoInfo) {
+            return false;
+        }
+
+        const owner = repoInfo.owner.toLowerCase();
+        return [currentUser.login, currentUser.username].some(identity =>
+            typeof identity === 'string' && identity.toLowerCase() === owner,
+        );
     }
 
     private async getProviderUserInfo(controlPlane: ControlPlane, token: string): Promise<{ login?: string; username?: string } | undefined> {
@@ -856,11 +1133,14 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
     }
 
     private async listRepoBranches(controlPlane: ControlPlane, workspace: WorkspaceInfo, token: string): Promise<string[]> {
-        if (!workspace.repo_owner || !workspace.repo_name) {
+        workspace = this.normalizeWorkspace(workspace);
+        const repoInfo = getWorkspaceRepo(workspace);
+        if (!repoInfo) {
             return [];
         }
 
-        const provider = this.getProviderInfo(controlPlane.provider ?? '', controlPlane);
+        const providerId = controlPlane.provider ?? workspace.source?.config?.provider;
+        const provider = this.getProviderInfo(providerId ?? '', controlPlane);
         const branchUrl = this.getProviderBranchUrl(provider, controlPlane, workspace);
         if (!branchUrl) {
             return [];
@@ -902,7 +1182,10 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         sourceBranch: string,
         token: string,
     ): Promise<boolean> {
-        if (!workspace.repo_owner || !workspace.repo_name) {
+        workspace = this.normalizeWorkspace(workspace);
+        const repoInfo = getWorkspaceRepo(workspace);
+        if (!repoInfo) {
+            console.warn('[QuickSpaces] Cannot resolve repo for branch creation from workspace:', workspace);
             return false;
         }
 
@@ -922,35 +1205,31 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
     }
 
-    private async createWorkspace(
-        url: string,
-        requestBody: CreateWorkspaceRequest,
-        cp: ControlPlane,
-        token: string,
-    ): Promise<void> {
-        try {
-            await httpPostJson<unknown>(url, JSON.stringify(requestBody), {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-            });
-        } catch (error) {
-            if (error instanceof Error && /HTTP\s+401/i.test(error.message)) {
-                const refreshedToken = await this.getAccessToken(cp, true);
-                if (!refreshedToken) {
-                    throw new Error('Control plane authentication required');
-                }
-                await httpPostJson<unknown>(url, JSON.stringify(requestBody), {
-                    headers: {
-                        Authorization: `Bearer ${refreshedToken}`,
-                        'Content-Type': 'application/json',
-                    },
-                });
-                return;
-            }
-            throw error;
-        }
+    private buildCreateWorkspaceRequest(profile: ExecutionProfile, workspace: WorkspaceInfo, ref: string, controlPlane: ControlPlane): CreateWorkspaceRequest {
+        const repoInfo = getWorkspaceRepo(this.normalizeWorkspace(workspace));
+        return {
+            repoOwner: repoInfo?.owner ?? '',
+            repoName: repoInfo?.repo ?? '',
+            repoProvider: workspace.source?.config?.provider ?? controlPlane.provider ?? 'github',
+            ref,
+            adapterType: profile.adapter_type,
+            runtimeConfig: profile.runtime_config,
+        };
+    }
+
+    private async promptForExecutionProfile(): Promise<ExecutionProfile | undefined> {
+        const profilePickItems = EXECUTION_PROFILES.map(profile => ({
+            label: profile.label,
+            description: profile.description,
+            profile,
+        }));
+
+        const selected = await vscode.window.showQuickPick(profilePickItems, {
+            placeHolder: 'Select an execution profile',
+            ignoreFocusOut: false,
+        });
+
+        return selected?.profile;
     }
 
     private getProviderRepoUrl(cp: ControlPlane): string {
@@ -1073,52 +1352,64 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
     }
 
     private normalizeWorkspaces(workspaces: WorkspaceInfo[]): WorkspaceInfo[] {
-        return workspaces.map(item => {
-            const workspace = { ...item };
-            if (!workspace.workspace_id && workspace.workspaceId) {
-                workspace.workspace_id = workspace.workspaceId;
-            }
-            if (!workspace.workspaceId && workspace.workspace_id) {
-                workspace.workspaceId = workspace.workspace_id;
-            }
+        return workspaces.map(item => this.normalizeWorkspace(item));
+    }
 
-            if (!workspace.repo_owner && workspace.repoName) {
-                workspace.repo_owner = workspace.repoName;
-            }
-            if (!workspace.repoName && workspace.repo_owner) {
-                workspace.repoName = workspace.repo_owner;
-            }
+    private normalizeWorkspace(item: WorkspaceInfo): WorkspaceInfo {
+        const workspace = { ...item };
+        if (!workspace.workspace_id && workspace.workspaceId) {
+            workspace.workspace_id = workspace.workspaceId;
+        }
+        if (!workspace.workspaceId && workspace.workspace_id) {
+            workspace.workspaceId = workspace.workspace_id;
+        }
 
-            if (!workspace.repo_name && workspace.repoName) {
-                workspace.repo_name = workspace.repoName;
-            }
-            if (!workspace.repoName && workspace.repo_name) {
-                workspace.repoName = workspace.repo_name;
-            }
+        if (workspace.source?.config?.owner) {
+            workspace.repo_owner = workspace.source.config.owner;
+            workspace.repoOwner = workspace.source.config.owner;
+        } else if (!workspace.repo_owner && workspace.repoName) {
+            workspace.repo_owner = workspace.repoName;
+        }
+        if (!workspace.repoName && workspace.repo_owner) {
+            workspace.repoName = workspace.repo_owner;
+        }
 
-            if (!workspace.actual_state && workspace.actualState) {
-                workspace.actual_state = workspace.actualState;
-            }
-            if (!workspace.actualState && workspace.actual_state) {
-                workspace.actualState = workspace.actual_state;
-            }
+        if (workspace.source?.config?.repo) {
+            workspace.repo_name = workspace.source.config.repo;
+            workspace.repoName = workspace.source.config.repo;
+        } else if (!workspace.repo_name && workspace.repoName) {
+            workspace.repo_name = workspace.repoName;
+        }
+        if (!workspace.repoName && workspace.repo_name) {
+            workspace.repoName = workspace.repo_name;
+        }
 
-            if (!workspace.desired_state && workspace.desiredState) {
-                workspace.desired_state = workspace.desiredState;
-            }
-            if (!workspace.desiredState && workspace.desired_state) {
-                workspace.desiredState = workspace.desired_state;
-            }
+        if (!workspace.actual_state && workspace.actualState) {
+            workspace.actual_state = workspace.actualState;
+        }
+        if (!workspace.actualState && workspace.actual_state) {
+            workspace.actualState = workspace.actual_state;
+        }
 
-            if (!workspace.connection_url && workspace.connectionUrl) {
-                workspace.connection_url = workspace.connectionUrl;
-            }
-            if (!workspace.connectionUrl && workspace.connection_url) {
-                workspace.connectionUrl = workspace.connection_url;
-            }
+        if (!workspace.desired_state && workspace.desiredState) {
+            workspace.desired_state = workspace.desiredState;
+        }
+        if (!workspace.desiredState && workspace.desired_state) {
+            workspace.desiredState = workspace.desired_state;
+        }
 
-            return workspace;
-        });
+        if (!workspace.connection_url && workspace.connectionUrl) {
+            workspace.connection_url = workspace.connectionUrl;
+        }
+        if (!workspace.connectionUrl && workspace.connection_url) {
+            workspace.connectionUrl = workspace.connection_url;
+        }
+
+        if (!workspace.ref && workspace.source?.config?.ref) {
+            workspace.ref = workspace.source.config.ref;
+        }
+
+        return workspace;
     }
 
     private resolveControlPlane(controlPlaneOrItem: ControlPlane | ControlPlaneItem | vscode.TreeItem | undefined): ControlPlane | undefined {
@@ -1165,7 +1456,13 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         }
 
         const possible = workspaceOrItem as WorkspaceInfo;
-        if (possible.workspace_id || possible.workspaceId || possible.repo_owner || possible.repo_name) {
+        if (
+            possible.workspace_id ||
+            possible.workspaceId ||
+            possible.repo_owner ||
+            possible.repo_name ||
+            (possible.source?.config?.owner && possible.source?.config?.repo)
+        ) {
             return { workspace: possible };
         }
 
@@ -1178,16 +1475,14 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
             return cached.map(workspace => new WorkspaceItem(workspace, cp.name));
         }
 
-        const token = await this.getAccessToken(cp, true);
+        const token = await this.getAccessToken(cp, false);
         if (!token) {
             return [new StatusItem('Authorization required', 'Authorize the repository provider to access this control plane', 'warning')];
         }
 
-        const url = `${trimTrailingSlashes(cp.url)}/api/v1/workspaces`;
+        const apiClient = createControlPlaneApiClient(cp, token);
         try {
-            const workspaces = await httpGetJson<WorkspaceInfo[]>(url, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
+            const workspaces = await apiClient.listWorkspaces();
             const normalized = this.normalizeWorkspaces(Array.isArray(workspaces) ? workspaces : []);
             this.workspaceCacheByControlPlaneUrl.set(this.getControlPlaneCacheKey(cp), normalized);
 
@@ -1199,32 +1494,12 @@ export class QuickspacesTreeProvider implements vscode.TreeDataProvider<TreeItem
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unexpected error';
             if (typeof message === 'string' && /HTTP\s+(401|403)/.test(message)) {
-                const refreshedToken = await this.getAccessToken(cp, true);
-                if (!refreshedToken) {
-                    return [new StatusItem('Authentication required', 'Sign in again to continue', 'warning')];
-                }
-
-                try {
-                    const workspaces = await httpGetJson<WorkspaceInfo[]>(url, {
-                        headers: { Authorization: `Bearer ${refreshedToken}` },
-                    });
-                    const normalized = this.normalizeWorkspaces(Array.isArray(workspaces) ? workspaces : []);
-                    this.workspaceCacheByControlPlaneUrl.set(this.getControlPlaneCacheKey(cp), normalized);
-
-                    if (!normalized.length) {
-                        return [new StatusItem('No workspaces found', 'The control plane returned an empty list', 'info')];
-                    }
-
-                    return normalized.map(workspace => new WorkspaceItem(workspace, cp.name));
-                } catch (retryError) {
-                    const retryMessage = retryError instanceof Error ? retryError.message : 'Unexpected error';
-                    return [new StatusItem('Authentication required', retryMessage, 'warning')];
-                }
+                return [new StatusItem('Authentication required', 'Sign in again to continue', 'warning')];
             }
             return [new StatusItem('Unable to load workspaces', message, 'error')];
         }
     }
 }
 
-export { httpGetJson, httpPostJson, httpRequestJson, httpProbe };
+export { httpGetJson, httpPostJson, httpRequestJson };
 export { ControlPlaneItem, WorkspaceItem, StatusItem } from './treeItems';
